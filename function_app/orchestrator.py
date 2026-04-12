@@ -23,53 +23,38 @@ from sharepoint_client import SharePointClient
 logger = logging.getLogger(__name__)
 
 
-# ---------------------------------------------------------------------------
-# Role → email resolution
-# These map the role labels from the matrix to real people.
-# In production, look these up from the HC for Microsoft sheet / AD groups.
-# ---------------------------------------------------------------------------
-
 ROLE_EMAIL_MAP_ENV_KEYS = {
     "HR Manager": "EMAIL_HR_MANAGER",
     "Payroll Manager": "EMAIL_PAYROLL_MANAGER",
     "Benefits Specialist": "EMAIL_BENEFITS_SPECIALIST",
     "HR Generalist": "EMAIL_HR_GENERALIST",
-    # GM/Director, Executive, CEO, 2nd Level Manager, Direct Manager, Hiring Manager
-    # are resolved dynamically from the request payload (submitted by the form)
 }
 
 
 def _resolve_static_role(role: str) -> tuple[str, str]:
-    """Return (name, email) for static roles (HR, Payroll, Benefits)."""
     env_key = ROLE_EMAIL_MAP_ENV_KEYS.get(role)
     if env_key:
         email = os.environ.get(env_key, f"{role.lower().replace(' ','.')}@streamflo.com")
-        name = role  # display name — can be enriched from AD
-        return name, email
+        return role, email
     raise ValueError(f"No static mapping for role: {role}")
 
 
 def _resolve_dynamic_role(role: str, request_fields: dict) -> tuple[str, str]:
-    """
-    Resolve dynamic roles (Direct Manager, 2nd Level Manager, etc.)
-    from the SharePoint list item fields submitted with the request.
-    """
     role_field_map = {
-        "Direct Manager": ("DirectManagerName", "DirectManagerEmail"),
-        "2nd Level Manager": ("SecondLevelManagerName", "SecondLevelManagerEmail"),
-        "Hiring Manager": ("HiringManagerName", "HiringManagerEmail"),
-        "GM/Director": ("GMDirectorName", "GMDirectorEmail"),
-        "Executive": ("ExecutiveName", "ExecutiveEmail"),
-        "CEO": ("CEOName", "CEOEmail"),
+        "Direct Manager":    ("DirectManagerName",      "DirectManagerEmail"),
+        "2nd Level Manager": ("SecondLevelManagerName",  "SecondLevelManagerEmail"),
+        "Hiring Manager":    ("HiringManagerName",       "HiringManagerEmail"),
+        "GM/Director":       ("GMDirectorName",          "GMDirectorEmail"),
+        "Executive":         ("ExecutiveName",            "ExecutiveEmail"),
+        "CEO":               ("CEOName",                  "CEOEmail"),
     }
     if role in role_field_map:
         name_field, email_field = role_field_map[role]
-        name = request_fields.get(name_field, role)
+        name  = request_fields.get(name_field, role)
         email = request_fields.get(email_field, "")
         if not email:
             raise ValueError(f"Missing email for role '{role}' in request fields")
         return name, email
-    # Fall back to static
     return _resolve_static_role(role)
 
 
@@ -80,42 +65,34 @@ def resolve_role(role: str, request_fields: dict) -> tuple[str, str]:
         return _resolve_static_role(role)
 
 
-# ---------------------------------------------------------------------------
-# Main orchestrator
-# ---------------------------------------------------------------------------
-
 class ApprovalOrchestrator:
     def __init__(self):
-        self.sp = SharePointClient()
-        self.mailer = GraphMailSender()
+        self.sp       = SharePointClient()
+        self.mailer   = GraphMailSender()
         self.uploader = HRRecordsUploader()
         self.base_url = os.environ.get("APPROVAL_BASE_URL", "").rstrip("/")
 
     # ── Entry points ──────────────────────────────────────────────────────
 
     def handle_new_request(self, item_id: str) -> None:
-        """
-        Called when a new SharePoint list item is created.
-        Validates the workflow key, sets initial state, sends first approver email.
-        """
-        fields = self.sp.get_item(item_id)
+        fields       = self.sp.get_item(item_id)
         workflow_key = fields.get("WorkflowKey", "")
-        workflow = get_workflow(workflow_key)
+        workflow     = get_workflow(workflow_key)
 
         if not workflow:
             logger.error("Unknown workflow key '%s' for item %s", workflow_key, item_id)
-            self.sp.update_item(item_id, {"Status": "Error", "ErrorMessage": f"Unknown workflow: {workflow_key}"})
+            self.sp.update_item(item_id, {
+                "Status": "Error",
+                "ErrorMessage": f"Unknown workflow: {workflow_key}",
+            })
             return
 
         logger.info("New request %s: %s", item_id, workflow.request_type)
-
-        # Set initial state
         self.sp.update_item(item_id, {
             "Status": "In Progress",
             "CurrentApprovalStep": 0,
             "WorkflowCategory": workflow.category.value,
         })
-
         self._send_approver_email(item_id, fields, workflow, step=0, previous_approvals=[])
 
     def handle_approval_action(
@@ -124,14 +101,15 @@ class ApprovalOrchestrator:
         approver_email: str,
         action: str,        # "approve" | "reject"
         comments: str = "",
+        list_key: str = "",
     ) -> dict:
         """
-        Called by the HTTP trigger when an approver clicks Approve/Reject in their email.
+        Called when an approver clicks Approve or Reject (after entering comments).
         Returns a dict with outcome info for the HTTP response.
         """
-        fields = self.sp.get_item(item_id)
+        fields       = self.sp.get_item(item_id)
         workflow_key = fields.get("WorkflowKey", "")
-        workflow = get_workflow(workflow_key)
+        workflow     = get_workflow(workflow_key)
 
         if not workflow:
             return {"error": "Workflow not found", "request_id": item_id}
@@ -141,8 +119,7 @@ class ApprovalOrchestrator:
         if workflow.requires_ceo:
             chain = chain + ["CEO"]
 
-        # Validate this approver is expected at this step
-        expected_role = chain[current_step]
+        expected_role               = chain[current_step]
         expected_name, expected_email = resolve_role(expected_role, fields)
 
         if approver_email.lower() != expected_email.lower():
@@ -152,12 +129,13 @@ class ApprovalOrchestrator:
             )
             return {"error": "Not the expected approver for this step", "request_id": item_id}
 
-        # Already decided
         existing_decision = fields.get(f"ApproverStep{current_step}Decision", "")
         if existing_decision:
-            return {"message": f"Step {current_step} already recorded as {existing_decision}", "request_id": item_id}
+            return {
+                "message": f"Step {current_step} already recorded as {existing_decision}",
+                "request_id": item_id,
+            }
 
-        # Record the decision
         self.sp.record_approval_decision(
             item_id=item_id,
             step=current_step,
@@ -170,15 +148,20 @@ class ApprovalOrchestrator:
         request_details = self._extract_request_details(fields, workflow)
 
         if action == "reject":
-            self._handle_rejection(item_id, fields, workflow, expected_name, request_details)
+            self._handle_rejection(
+                item_id, fields, workflow, expected_name, request_details,
+                comments=comments,
+            )
             return {"outcome": "rejected", "request_id": item_id, "rejected_by": expected_name}
 
-        # Approved — move to next step or complete
         next_step = current_step + 1
         if next_step < len(chain):
             self.sp.advance_to_next_step(item_id, next_step)
             previous_approvals = self._collect_previous_approvals(fields, current_step + 1)
-            self._send_approver_email(item_id, fields, workflow, step=next_step, previous_approvals=previous_approvals)
+            self._send_approver_email(
+                item_id, fields, workflow, step=next_step,
+                previous_approvals=previous_approvals,
+            )
             return {"outcome": "advanced", "request_id": item_id, "next_step": next_step}
         else:
             self._handle_full_approval(item_id, fields, workflow, request_details)
@@ -194,11 +177,8 @@ class ApprovalOrchestrator:
         step: int,
         previous_approvals: list[dict],
     ) -> None:
-        chain = workflow.approval_chain
-        if workflow.requires_ceo:
-            chain = chain + ["CEO"]
-
-        role = chain[step]
+        chain = workflow.approval_chain + (["CEO"] if workflow.requires_ceo else [])
+        role  = chain[step]
         name, email = resolve_role(role, fields)
         request_details = self._extract_request_details(fields, workflow)
 
@@ -223,9 +203,10 @@ class ApprovalOrchestrator:
         workflow: ApprovalWorkflow,
         rejected_by: str,
         request_details: dict,
+        comments: str = "",
     ) -> None:
         self.sp.mark_rejected(item_id, rejected_by)
-        initiator_name = fields.get("InitiatorName", "")
+        initiator_name  = fields.get("InitiatorName", "")
         initiator_email = fields.get("InitiatorEmail", "")
         if initiator_email:
             msg = build_requester_email(
@@ -234,9 +215,10 @@ class ApprovalOrchestrator:
                 request_details=request_details,
                 approved=False,
                 rejected_by=rejected_by,
+                rejection_comments=comments,
             )
             self.mailer.send(msg)
-        logger.info("Request %s rejected by %s", item_id, rejected_by)
+        logger.info("Request %s rejected by %s. Comments: %s", item_id, rejected_by, comments)
 
     def _handle_full_approval(
         self,
@@ -245,15 +227,11 @@ class ApprovalOrchestrator:
         workflow: ApprovalWorkflow,
         request_details: dict,
     ) -> None:
-        fully_approved_date = fields.get("FullyApprovedDate", "")
         self.sp.mark_fully_approved(item_id)
-
-        # Re-fetch to get the FullyApprovedDate that was just written
-        updated = self.sp.get_item(item_id)
+        updated             = self.sp.get_item(item_id)
         fully_approved_date = updated.get("FullyApprovedDate", "")
 
-        # ── Generate and upload PDF ───────────────────────────────────────
-        chain = workflow.approval_chain + (["CEO"] if workflow.requires_ceo else [])
+        chain     = workflow.approval_chain + (["CEO"] if workflow.requires_ceo else [])
         approvals = self._collect_previous_approvals(fields, len(chain))
 
         pdf_url = ""
@@ -277,14 +255,11 @@ class ApprovalOrchestrator:
                 filename=filename,
                 approved_date=fully_approved_date,
             )
-            # Save the PDF link back onto the SharePoint list item
             self.sp.update_item(item_id, {"ApprovalRecordURL": pdf_url})
             logger.info("Approval PDF saved to HR Records: %s", pdf_url)
         except Exception as e:
             logger.error("PDF generation/upload failed for %s: %s", item_id, e)
-            # Don't block the rest of the flow — emails still go out
 
-        # ── Notify roles in parallel ──────────────────────────────────────
         notify_emails: list = []
         for role in workflow.notify_roles:
             try:
@@ -302,8 +277,7 @@ class ApprovalOrchestrator:
 
         self.mailer.send_batch(notify_emails)
 
-        # ── Confirmation to initiator ─────────────────────────────────────
-        initiator_name = fields.get("InitiatorName", "")
+        initiator_name  = fields.get("InitiatorName", "")
         initiator_email = fields.get("InitiatorEmail", "")
         if initiator_email:
             msg = build_requester_email(
@@ -320,21 +294,28 @@ class ApprovalOrchestrator:
 
     def _extract_request_details(self, fields: dict, workflow: ApprovalWorkflow) -> dict:
         return {
-            "request_type": workflow.request_type,
-            "employee_name": fields.get("EmployeeName", ""),
+            "request_type":    workflow.request_type,
+            "employee_name":   fields.get("EmployeeName", ""),
             "employee_number": fields.get("EmployeeNumber", ""),
-            "initiator_name": fields.get("InitiatorName", ""),
-            "submitted_date": fields.get("Created", ""),
-            "effective_date": fields.get("EffectiveDate", ""),
-            "notes": fields.get("RequestNotes", ""),
+            "initiator_name":  fields.get("InitiatorName", ""),
+            "submitted_date":  fields.get("Created", ""),
+            "effective_date":  fields.get("EffectiveDate", ""),
+            "notes":           fields.get("RequestNotes", ""),
         }
 
     def _collect_previous_approvals(self, fields: dict, up_to_step: int) -> list[dict]:
         result = []
         for i in range(up_to_step):
-            name = fields.get(f"ApproverStep{i}Name", "")
-            role_decision = fields.get(f"ApproverStep{i}Decision", "")
-            date = fields.get(f"ApproverStep{i}Date", "")
+            name     = fields.get(f"ApproverStep{i}Name", "")
+            decision = fields.get(f"ApproverStep{i}Decision", "")
+            date     = fields.get(f"ApproverStep{i}Date", "")
+            comments = fields.get(f"ApproverStep{i}Comments", "")
             if name:
-                result.append({"name": name, "role": f"Step {i+1}", "decision": role_decision, "date": date})
+                result.append({
+                    "name":     name,
+                    "role":     f"Step {i+1}",
+                    "decision": decision,
+                    "date":     date,
+                    "comments": comments,
+                })
         return result

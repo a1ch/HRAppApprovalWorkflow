@@ -15,14 +15,11 @@ class EmailMessage:
     body_text: str
 
 
-BASE_URL_ENV = "APPROVAL_BASE_URL"  # set in Azure Function App settings
-
-
 def _approval_link(base_url: str, request_id: str, approver_email: str, action: str) -> str:
     params = urlencode({
         "request_id": request_id,
-        "approver": approver_email,
-        "action": action,
+        "approver":   approver_email,
+        "action":     action,
     })
     return f"{base_url}/api/approval-action?{params}"
 
@@ -60,6 +57,9 @@ def _html_wrapper(content: str, subject: str) -> str:
   .dot-current {{ background: #003366; }}
   .dot-pending {{ background: #ccc; }}
   .notify-banner {{ background: #fff8e1; border: 1px solid #ffe082; border-radius: 6px; padding: 14px 18px; margin: 20px 0; font-size: 13px; color: #5d4037; }}
+  .rejection-reason {{ background: #fdf0f0; border-radius: 6px; padding: 14px 18px; margin: 20px 0; border-left: 3px solid #c0392b; }}
+  .rejection-reason p {{ font-size: 13px; margin: 0; }}
+  .rejection-reason .label {{ font-weight: 600; color: #c0392b; margin-bottom: 6px; }}
 </style>
 </head>
 <body>
@@ -93,16 +93,15 @@ def build_approver_email(
 ) -> EmailMessage:
     """Email sent to each approver in sequence."""
 
-    employee = request_details.get("employee_name", "[Employee]")
-    req_type = request_details.get("request_type", workflow_name)
+    employee  = request_details.get("employee_name", "[Employee]")
+    req_type  = request_details.get("request_type", workflow_name)
     initiator = request_details.get("initiator_name", "[Initiator]")
     submitted = request_details.get("submitted_date", "")
-    notes = request_details.get("notes", "")
+    notes     = request_details.get("notes", "")
 
     approve_url = _approval_link(base_url, request_id, approver_email, "approve")
-    reject_url = _approval_link(base_url, request_id, approver_email, "reject")
+    reject_url  = _approval_link(base_url, request_id, approver_email, "reject")
 
-    # Build chain visualisation
     chain_html = '<div class="chain">'
     for i, role in enumerate(approval_chain):
         if i < current_step:
@@ -127,7 +126,10 @@ def build_approver_email(
             for a in previous_approvals
         )
 
-    notes_html = f'<div class="detail-row"><span class="detail-label">Notes:</span><span class="detail-value">{notes}</span></div>' if notes else ""
+    notes_html = (
+        f'<div class="detail-row"><span class="detail-label">Notes:</span>'
+        f'<span class="detail-value">{notes}</span></div>'
+    ) if notes else ""
 
     content = f"""
 <p class="greeting">Hi {approver_name},</p>
@@ -152,8 +154,8 @@ def build_approver_email(
 </div>
 
 <p class="note">
-  Clicking Approve or Reject will record your decision immediately.<br>
-  If you need to add comments, reply to your HR contact directly.<br>
+  Clicking Approve records your decision immediately.<br>
+  Clicking Reject will ask you to provide a reason before confirming.<br>
   Request ID: <code>{request_id}</code>
 </p>
 """
@@ -163,7 +165,11 @@ def build_approver_email(
         to=approver_email,
         subject=subject,
         body_html=_html_wrapper(content, subject),
-        body_text=f"Hi {approver_name},\n\nAn HR request requires your approval.\n\nRequest: {req_type}\nEmployee: {employee}\nInitiated by: {initiator}\n\nApprove: {approve_url}\nReject: {reject_url}\n\nRequest ID: {request_id}",
+        body_text=(
+            f"Hi {approver_name},\n\nAn HR request requires your approval.\n\n"
+            f"Request: {req_type}\nEmployee: {employee}\nInitiated by: {initiator}\n\n"
+            f"Approve: {approve_url}\nReject: {reject_url}\n\nRequest ID: {request_id}"
+        ),
     )
 
 
@@ -176,12 +182,15 @@ def build_notify_email(
 ) -> EmailMessage:
     """FYI notification sent after full approval — no action required."""
 
-    employee = request_details.get("employee_name", "[Employee]")
-    req_type = request_details.get("request_type", workflow_name)
+    employee  = request_details.get("employee_name", "[Employee]")
+    req_type  = request_details.get("request_type", workflow_name)
     effective = request_details.get("effective_date", "")
     initiator = request_details.get("initiator_name", "[Initiator]")
 
-    effective_row = f'<div class="detail-row"><span class="detail-label">Effective date:</span><span class="detail-value">{effective}</span></div>' if effective else ""
+    effective_row = (
+        f'<div class="detail-row"><span class="detail-label">Effective date:</span>'
+        f'<span class="detail-value">{effective}</span></div>'
+    ) if effective else ""
 
     content = f"""
 <p class="greeting">Hi {notify_name},</p>
@@ -208,7 +217,10 @@ def build_notify_email(
         to=notify_email,
         subject=subject,
         body_html=_html_wrapper(content, subject),
-        body_text=f"Hi {notify_name},\n\nFYI: The following request has been fully approved.\n\nRequest: {req_type}\nEmployee: {employee}\nStatus: Fully Approved\n\nNo action required.",
+        body_text=(
+            f"Hi {notify_name},\n\nFYI: The following request has been fully approved.\n\n"
+            f"Request: {req_type}\nEmployee: {employee}\nStatus: Fully Approved\n\nNo action required."
+        ),
     )
 
 
@@ -219,6 +231,7 @@ def build_requester_email(
     approved: bool,
     rejected_by: str = "",
     pdf_url: str = "",
+    rejection_comments: str = "",
 ) -> EmailMessage:
     """Final status email to the person who initiated the request."""
 
@@ -226,10 +239,11 @@ def build_requester_email(
     employee = request_details.get("employee_name", "[Employee]")
 
     if approved:
-        status_html = '<span style="color:#1a7a3c;font-weight:600">Fully Approved</span>'
-        message = "Your request has been approved by all required approvers and will now be processed by HR."
-        action_note = "If you have questions about next steps, contact your HR representative."
-        pdf_html = ""
+        status_html   = '<span style="color:#1a7a3c;font-weight:600">Fully Approved</span>'
+        message       = "Your request has been approved by all required approvers and will now be processed by HR."
+        action_note   = "If you have questions about next steps, contact your HR representative."
+        comments_html = ""
+        pdf_html      = ""
         if pdf_url:
             pdf_html = (
                 '<div style="margin:20px 0;padding:14px 18px;background:#f8f9fa;'
@@ -241,9 +255,17 @@ def build_requester_email(
             )
     else:
         status_html = '<span style="color:#c0392b;font-weight:600">Rejected</span>'
-        message = f"Your request was rejected by {rejected_by}. Please contact HR for more information."
-        action_note = "You may resubmit after addressing the reasons for rejection."
-        pdf_html = ""
+        message     = f"Your request was rejected by {rejected_by}."
+        action_note = "Please contact HR for more information. You may resubmit after addressing the reason for rejection."
+        pdf_html    = ""
+        comments_html = ""
+        if rejection_comments:
+            comments_html = (
+                '<div class="rejection-reason">'
+                '<p class="label">Reason for rejection</p>'
+                f'<p>{rejection_comments}</p>'
+                '</div>'
+            )
 
     content = f"""
 <p class="greeting">Hi {requester_name},</p>
@@ -256,15 +278,22 @@ def build_requester_email(
 </div>
 
 <p style="font-size:14px">{message}</p>
+{comments_html}
 {pdf_html}
 <p class="note">{action_note}</p>
 """
 
     status_word = "approved" if approved else "rejected"
-    subject = f"Your {req_type.lower()} request has been {status_word}"
-    plain = f"Hi {requester_name},\n\nYour request ({req_type}) for {employee} has been {status_word}.\n\n{message}"
+    subject     = f"Your {req_type.lower()} request has been {status_word}"
+    plain       = (
+        f"Hi {requester_name},\n\nYour request ({req_type}) for {employee} "
+        f"has been {status_word}.\n\n{message}"
+    )
+    if rejection_comments:
+        plain += f"\n\nReason: {rejection_comments}"
     if pdf_url:
         plain += f"\n\nApproval record: {pdf_url}"
+
     return EmailMessage(
         to=requester_email,
         subject=subject,
