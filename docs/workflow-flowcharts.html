@@ -1,0 +1,236 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>HR Approval Workflows — Stream-Flo Group</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #f5f6f8; color: #1a1a2e; font-size: 14px; line-height: 1.5; }
+  header { background: #003366; color: #fff; padding: 20px 32px; }
+  header h1 { font-size: 18px; font-weight: 600; }
+  header p { font-size: 12px; color: #a0b8d0; margin-top: 3px; }
+  .main { max-width: 1000px; margin: 0 auto; padding: 24px 20px; }
+  .legend { display: flex; gap: 14px; flex-wrap: wrap; margin-bottom: 20px; padding: 12px 16px; background: #fff; border: 1px solid #e0e2e8; border-radius: 8px; }
+  .legend-item { display: flex; align-items: center; gap: 6px; font-size: 11px; color: #6b7280; }
+  .leg-dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
+  .cat-section { margin-bottom: 28px; }
+  .cat-header { display: flex; align-items: center; gap: 10px; padding: 10px 0 8px; cursor: pointer; user-select: none; border-bottom: 2px solid #e0e2e8; margin-bottom: 12px; }
+  .cat-dot { width: 12px; height: 12px; border-radius: 50%; flex-shrink: 0; }
+  .cat-title { font-size: 15px; font-weight: 600; }
+  .cat-count { font-size: 12px; color: #6b7280; }
+  .cat-toggle { margin-left: auto; font-size: 12px; color: #9ca3af; }
+  .wf-grid { display: grid; gap: 10px; }
+  .wf-card { background: #fff; border: 1px solid #e0e2e8; border-radius: 8px; }
+  .wf-label { font-size: 12px; font-weight: 600; color: #6b7280; padding: 10px 14px 4px; display: flex; align-items: center; gap: 6px; }
+  .ceo-badge { font-size: 10px; color: #A32D2D; background: #FCEBEB; padding: 1px 6px; border-radius: 3px; border: 1px solid #F09595; }
+  .flow-svg { display: block; width: 100%; }
+  .hidden { display: none !important; }
+  footer { text-align: center; padding: 24px; font-size: 11px; color: #9ca3af; border-top: 1px solid #e0e2e8; margin-top: 32px; }
+  @media print {
+    header { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+    .cat-toggle { display: none; }
+    .wf-grid { display: grid !important; }
+    .wf-card { break-inside: avoid; }
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>HR Approval Workflows — Stream-Flo Group</h1>
+  <p>All 30 workflows &nbsp;·&nbsp; Stream-Flo USA LLC &nbsp;·&nbsp; Master Flo Valve USA Inc. &nbsp;·&nbsp; Dycor &nbsp;·&nbsp; Any approver may reject at any step</p>
+</header>
+
+<div class="main">
+  <div class="legend">
+    <div class="legend-item"><div class="leg-dot" style="background:#E6F1FB;border:1px solid #185FA5"></div>Initiator / Submit</div>
+    <div class="legend-item"><div class="leg-dot" style="background:#B5D4F4;border:1px solid #378ADD"></div>HR Manager</div>
+    <div class="legend-item"><div class="leg-dot" style="background:#9FE1CB;border:1px solid #1D9E75"></div>2nd Level Mgr / Payroll</div>
+    <div class="legend-item"><div class="leg-dot" style="background:#FAC775;border:1px solid #BA7517"></div>GM / Director / Exec</div>
+    <div class="legend-item"><div class="leg-dot" style="background:#F7C1C1;border:1px solid #E24B4A"></div>CEO</div>
+    <div class="legend-item"><div class="leg-dot" style="background:#D3D1C7;border:1px dashed #888780"></div>Notify only</div>
+    <div class="legend-item"><div class="leg-dot" style="background:#FCEBEB;border:1px solid #E24B4A"></div>Rejected (any step)</div>
+    <div class="legend-item"><div class="leg-dot" style="background:#EAF3DE;border:1px solid #639922"></div>Fully approved</div>
+  </div>
+  <div id="cats"></div>
+</div>
+
+<footer>Stream-Flo Group &mdash; HR Approval Workflow Reference &mdash; Source: approval_matrix.py</footer>
+
+<script>
+const CATS = [
+  {
+    name: "Job Requisition", color: "#185FA5",
+    workflows: [
+      {name:"Backfill – budgeted", initiator:"Hiring Mgr", chain:["HR Mgr","2nd Level Mgr","GM/Director"], notify:[], ceo:false},
+      {name:"Backfill – unbudgeted", initiator:"2nd Level Mgr", chain:["HR Mgr","GM/Director","Executive"], notify:[], ceo:true},
+      {name:"New position – budgeted", initiator:"2nd Level Mgr", chain:["HR Mgr","GM/Director","Executive"], notify:[], ceo:true},
+      {name:"New position – unbudgeted", initiator:"2nd Level Mgr", chain:["HR Mgr","GM/Director","Executive"], notify:[], ceo:true},
+      {name:"Temp/contract – budgeted", initiator:"2nd Level Mgr", chain:["HR Mgr","GM/Director","Executive"], notify:[], ceo:false},
+      {name:"Temp/contract – unbudgeted", initiator:"2nd Level Mgr", chain:["HR Mgr","GM/Director","Executive"], notify:[], ceo:false},
+    ]
+  },
+  {
+    name: "Payroll Change Notice", color: "#0F6E56",
+    workflows: [
+      {name:"Supervisor change", initiator:"Direct Mgr", chain:["HR Mgr","2nd Level Mgr","Payroll Mgr"], notify:["Payroll Mgr"], ceo:false},
+      {name:"Department change", initiator:"Direct Mgr", chain:["HR Mgr","2nd Level Mgr","Payroll Mgr"], notify:["Payroll Mgr"], ceo:false},
+      {name:"Location change", initiator:"Direct Mgr", chain:["HR Mgr","2nd Level Mgr","GM/Director"], notify:["Payroll Mgr"], ceo:false},
+      {name:"Lateral position change", initiator:"Direct Mgr", chain:["HR Mgr","2nd Level Mgr","Payroll Mgr"], notify:["HR Generalist"], ceo:false},
+      {name:"Salaried promo – outside merit", initiator:"2nd Level Mgr", chain:["HR Mgr","GM/Director","Executive"], notify:["Benefits Spec","Payroll Mgr"], ceo:true},
+      {name:"Hourly promo – outside merit", initiator:"2nd Level Mgr", chain:["HR Mgr","GM/Director","Executive"], notify:["Benefits Spec","Payroll Mgr"], ceo:false},
+      {name:"Salaried rate change", initiator:"2nd Level Mgr", chain:["HR Mgr","GM/Director","Executive"], notify:["Benefits Spec","Payroll Mgr"], ceo:true},
+      {name:"Hourly rate change", initiator:"2nd Level Mgr", chain:["HR Mgr","GM/Director","Executive"], notify:["Benefits Spec","Payroll Mgr"], ceo:false},
+      {name:"Rotation/shift – with pay change", initiator:"2nd Level Mgr", chain:["HR Mgr","GM/Director","Executive"], notify:["Benefits Spec","Payroll Mgr"], ceo:false},
+      {name:"Rotation/shift – no pay change", initiator:"Direct Mgr", chain:["HR Mgr","2nd Level Mgr","Payroll Mgr"], notify:["Benefits Spec","Payroll Mgr"], ceo:false},
+      {name:"Termination – discharge", initiator:"Direct Mgr", chain:["HR Mgr","2nd Level Mgr","Payroll Mgr"], notify:["Benefits Spec","Payroll Mgr"], ceo:false},
+      {name:"Termination – resignation", initiator:"Direct Mgr", chain:["HR Mgr","2nd Level Mgr","Payroll Mgr"], notify:["Benefits Spec","Payroll Mgr"], ceo:false},
+      {name:"Termination – retirement", initiator:"Direct Mgr", chain:["HR Mgr","2nd Level Mgr","Payroll Mgr"], notify:["Benefits Spec","Payroll Mgr"], ceo:false},
+    ]
+  },
+  {
+    name: "Leave of Absence", color: "#854F0B",
+    workflows: [
+      {name:"Personal LOA", initiator:"Direct Mgr", chain:["HR Mgr","2nd Level Mgr","GM/Director"], notify:["Benefits Spec","Payroll Mgr"], ceo:false},
+      {name:"LOA / FMLA", initiator:"Direct Mgr", chain:["HR Mgr","2nd Level Mgr","GM/Director"], notify:["Benefits Spec","Payroll Mgr"], ceo:false},
+      {name:"Military LOA", initiator:"Direct Mgr", chain:["HR Mgr","2nd Level Mgr","GM/Director"], notify:["Benefits Spec","Payroll Mgr"], ceo:false},
+    ]
+  },
+  {
+    name: "Candidate Offer Letter", color: "#534AB7",
+    workflows: [
+      {name:"Backfill – budgeted", initiator:"Hiring Mgr", chain:["HR Mgr","2nd Level Mgr","GM/Director"], notify:["Benefits Spec","Payroll Mgr"], ceo:false},
+      {name:"Backfill – unbudgeted", initiator:"2nd Level Mgr", chain:["HR Mgr","GM/Director","Executive"], notify:["Benefits Spec","Payroll Mgr"], ceo:false},
+      {name:"New position – budgeted", initiator:"2nd Level Mgr", chain:["HR Mgr","GM/Director"], notify:["Benefits Spec","Payroll Mgr"], ceo:false},
+      {name:"New position – unbudgeted", initiator:"2nd Level Mgr", chain:["HR Mgr","GM/Director","Executive"], notify:["Benefits Spec","Payroll Mgr"], ceo:false},
+    ]
+  },
+  {
+    name: "Promotion / Title Change with Pay", color: "#D85A30",
+    workflows: [
+      {name:"Salaried promo – outside merit", initiator:"2nd Level Mgr", chain:["HR Mgr","GM/Director","Executive"], notify:["Payroll Mgr"], ceo:true},
+      {name:"Hourly promo – outside merit", initiator:"2nd Level Mgr", chain:["HR Mgr","GM/Director","Executive"], notify:["Payroll Mgr"], ceo:false},
+      {name:"Salaried rate change", initiator:"2nd Level Mgr", chain:["HR Mgr","GM/Director","Executive"], notify:["Payroll Mgr"], ceo:true},
+      {name:"Hourly rate change", initiator:"2nd Level Mgr", chain:["HR Mgr","GM/Director","Executive"], notify:["Payroll Mgr"], ceo:false},
+    ]
+  }
+];
+
+function roleStyle(r) {
+  if (r === "HR Mgr")      return {fill:"#B5D4F4", text:"#0C447C", stroke:"#378ADD"};
+  if (r === "CEO")         return {fill:"#F7C1C1", text:"#791F1F", stroke:"#E24B4A"};
+  if (r === "GM/Director" || r === "Executive") return {fill:"#FAC775", text:"#633806", stroke:"#BA7517"};
+  if (r === "Payroll Mgr" || r === "2nd Level Mgr") return {fill:"#9FE1CB", text:"#085041", stroke:"#1D9E75"};
+  if (r === "Benefits Spec" || r === "HR Generalist") return {fill:"#D3D1C7", text:"#5F5E5A", stroke:"#888780", dashed:true};
+  return {fill:"#D3D1C7", text:"#5F5E5A", stroke:"#888780"};
+}
+
+function makeFlowSVG(wf) {
+  const chain = [...wf.chain, ...(wf.ceo ? ["CEO"] : [])];
+  const totalNodes = chain.length + 1;
+  const W = 900;
+  const boxW = Math.min(114, Math.floor((W - 40 - (totalNodes - 1) * 28) / totalNodes));
+  const boxH = 40;
+  const hGap = 28;
+  const rejBoxW = 78;
+  const rejBoxH = 32;
+  const notifyBoxW = 96;
+  const notifyBoxH = 32;
+  const mainY = 16;
+  const rejY = mainY + boxH + 26;
+  const notifyY = rejY + rejBoxH + 26;
+  const svgH = wf.notify.length > 0 ? notifyY + notifyBoxH + 16 : rejY + rejBoxH + 16;
+  const totalW = totalNodes * boxW + (totalNodes - 1) * hGap;
+  const startX = Math.floor((W - totalW) / 2);
+  const mid = 'arr' + Math.random().toString(36).slice(2, 8);
+
+  let s = `<svg class="flow-svg" viewBox="0 0 ${W} ${svgH}" xmlns="http://www.w3.org/2000/svg">`;
+  s += `<defs><marker id="${mid}" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse"><path d="M2 1L8 5L2 9" fill="none" stroke="context-stroke" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></marker></defs>`;
+
+  const smid = mainY + boxH / 2;
+  s += `<rect x="${startX}" y="${mainY}" width="${boxW}" height="${boxH}" rx="6" fill="#E6F1FB" stroke="#185FA5" stroke-width="0.75"/>`;
+  const initLabel = wf.initiator.length > 12 ? wf.initiator.slice(0, 11) + '\u2026' : wf.initiator;
+  s += `<text x="${startX + boxW/2}" y="${mainY + boxH/2 - 7}" text-anchor="middle" dominant-baseline="central" font-size="10" fill="#0C447C" font-family="-apple-system,sans-serif" font-weight="600">Submit</text>`;
+  s += `<text x="${startX + boxW/2}" y="${mainY + boxH/2 + 7}" text-anchor="middle" dominant-baseline="central" font-size="9" fill="#185FA5" font-family="-apple-system,sans-serif">${initLabel}</text>`;
+  s += `<line x1="${startX + boxW}" y1="${smid}" x2="${startX + boxW + hGap - 1}" y2="${smid}" stroke="#9ca3af" stroke-width="0.75" marker-end="url(#${mid})"/>`;
+
+  chain.forEach((role, i) => {
+    const x = startX + (i + 1) * (boxW + hGap);
+    const st = roleStyle(role);
+    const cx = x + boxW / 2;
+    const midY = mainY + boxH / 2;
+
+    s += `<rect x="${x}" y="${mainY}" width="${boxW}" height="${boxH}" rx="6" fill="${st.fill}" stroke="${st.stroke}" stroke-width="0.75"${st.dashed ? ' stroke-dasharray="3 2"' : ''}/>`;
+    const lbl = role.length > 13 ? role.slice(0, 12) + '\u2026' : role;
+    s += `<text x="${cx}" y="${midY}" text-anchor="middle" dominant-baseline="central" font-size="10" fill="${st.text}" font-family="-apple-system,sans-serif" font-weight="600">${lbl}</text>`;
+
+    s += `<line x1="${cx}" y1="${mainY + boxH}" x2="${cx}" y2="${rejY - 1}" stroke="#E24B4A" stroke-width="0.75" stroke-dasharray="3 2" marker-end="url(#${mid})"/>`;
+    s += `<rect x="${cx - rejBoxW/2}" y="${rejY}" width="${rejBoxW}" height="${rejBoxH}" rx="5" fill="#FCEBEB" stroke="#F09595" stroke-width="0.5"/>`;
+    s += `<text x="${cx}" y="${rejY + rejBoxH/2}" text-anchor="middle" dominant-baseline="central" font-size="9" fill="#A32D2D" font-family="-apple-system,sans-serif" font-weight="600">Rejected</text>`;
+
+    if (i < chain.length - 1) {
+      const nextX = x + boxW + hGap;
+      s += `<line x1="${x + boxW}" y1="${midY}" x2="${nextX - 1}" y2="${midY}" stroke="#9ca3af" stroke-width="0.75" marker-end="url(#${mid})"/>`;
+    }
+  });
+
+  const lastX = startX + chain.length * (boxW + hGap);
+  const lastCX = lastX + boxW / 2;
+  s += `<line x1="${lastCX}" y1="${mainY + boxH}" x2="${lastCX}" y2="${rejY - 1}" stroke="#639922" stroke-width="0.75" marker-end="url(#${mid})"/>`;
+  s += `<rect x="${lastCX - rejBoxW/2}" y="${rejY}" width="${rejBoxW}" height="${rejBoxH}" rx="5" fill="#EAF3DE" stroke="#97C459" stroke-width="0.5"/>`;
+  s += `<text x="${lastCX}" y="${rejY + rejBoxH/2}" text-anchor="middle" dominant-baseline="central" font-size="9" fill="#27500A" font-family="-apple-system,sans-serif" font-weight="600">Approved</text>`;
+
+  if (wf.notify.length > 0) {
+    const n = wf.notify.length;
+    const nTotalW = n * notifyBoxW + (n - 1) * 10;
+    const nStartX = lastCX - nTotalW / 2;
+    s += `<line x1="${lastCX}" y1="${rejY + rejBoxH}" x2="${lastCX}" y2="${notifyY - 1}" stroke="#9ca3af" stroke-width="0.5" stroke-dasharray="3 2" marker-end="url(#${mid})"/>`;
+    wf.notify.forEach((nr, ni) => {
+      const nx = nStartX + ni * (notifyBoxW + 10);
+      const nCX = nx + notifyBoxW / 2;
+      if (ni > 0) {
+        s += `<line x1="${lastCX}" y1="${notifyY + notifyBoxH/2}" x2="${nCX}" y2="${notifyY + notifyBoxH/2}" stroke="#9ca3af" stroke-width="0.5" stroke-dasharray="3 2"/>`;
+      }
+      const nLabel = nr.length > 12 ? nr.slice(0, 11) + '\u2026' : nr;
+      s += `<rect x="${nx}" y="${notifyY}" width="${notifyBoxW}" height="${notifyBoxH}" rx="5" fill="#F9F8F6" stroke="#B4B2A9" stroke-width="0.5" stroke-dasharray="3 2"/>`;
+      s += `<text x="${nCX}" y="${notifyY + 9}" text-anchor="middle" dominant-baseline="central" font-size="8.5" fill="#6b7280" font-family="-apple-system,sans-serif">Notify</text>`;
+      s += `<text x="${nCX}" y="${notifyY + 21}" text-anchor="middle" dominant-baseline="central" font-size="9" fill="#374151" font-family="-apple-system,sans-serif" font-weight="600">${nLabel}</text>`;
+    });
+  }
+
+  s += '</svg>';
+  return s;
+}
+
+function render() {
+  const container = document.getElementById('cats');
+  CATS.forEach(cat => {
+    const section = document.createElement('div');
+    section.className = 'cat-section';
+    const hdr = document.createElement('div');
+    hdr.className = 'cat-header';
+    hdr.innerHTML = `<div class="cat-dot" style="background:${cat.color}"></div><span class="cat-title">${cat.name}</span><span class="cat-count">${cat.workflows.length} workflows</span><span class="cat-toggle">▲ Collapse</span>`;
+    const body = document.createElement('div');
+    body.className = 'wf-grid';
+    cat.workflows.forEach(wf => {
+      const card = document.createElement('div');
+      card.className = 'wf-card';
+      const ceo = wf.ceo ? '<span class="ceo-badge">CEO required</span>' : '';
+      card.innerHTML = `<div class="wf-label">${wf.name}${ceo}</div>${makeFlowSVG(wf)}`;
+      body.appendChild(card);
+    });
+    hdr.addEventListener('click', () => {
+      const collapsed = body.classList.toggle('hidden');
+      hdr.querySelector('.cat-toggle').textContent = collapsed ? '▼ Expand' : '▲ Collapse';
+    });
+    section.appendChild(hdr);
+    section.appendChild(body);
+    container.appendChild(section);
+  });
+}
+
+render();
+</script>
+</body>
+</html>
