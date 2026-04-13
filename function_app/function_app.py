@@ -143,7 +143,7 @@ def rejection_form_get(req: func.HttpRequest) -> func.HttpResponse:
         from list_configs import LIST_CONFIGS
         config = LIST_CONFIGS.get(list_key)
         if config:
-            fields = orchestrator.sp.get_item(config.list_path, request_id)
+            fields = orchestrator.sp.get_item(request_id)
             employee_name = fields.get(config.employee_name_col, "")
             request_type  = fields.get(config.request_type_col, "") if config.request_type_col else ""
     except Exception as e:
