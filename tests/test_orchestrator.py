@@ -1,8 +1,8 @@
 """
 Orchestrator integration tests — no app registration or Azure needed.
 
-SharePointClient, GraphMailSender, and HRRecordsUploader are fully mocked.
-Tests cover the complete approval lifecycle end-to-end.
+SharePointClient, GraphMailSender, HRRecordsUploader, and HRRolesClient
+are all fully mocked. Tests cover the complete approval lifecycle end-to-end.
 
 Run: pytest tests/test_orchestrator.py -v
 """
@@ -111,6 +111,40 @@ class FakeUploader:
 
 
 # ---------------------------------------------------------------------------
+# Fake HR Roles client — replaces SharePoint list lookup
+# ---------------------------------------------------------------------------
+
+# Static role -> (name, email) as they would appear in the HR Approval Roles list
+STATIC_ROLES = {
+    "HR Manager":          ("HR Manager",         "rlperkins@streamflo.com"),
+    "Payroll Manager":     ("Payroll Manager",     "gthedford@streamflo.com"),
+    "Benefits Specialist": ("Benefits Specialist", "scarrisalez@streamflo.com"),
+    "HR Generalist":       ("HR Generalist",       "tparashar@streamflo.com"),
+}
+
+
+class FakeRolesClient:
+    """In-memory stand-in for HRRolesClient — no SharePoint needed."""
+
+    def __init__(self, roles: dict = None):
+        self._roles = roles if roles is not None else dict(STATIC_ROLES)
+
+    def resolve_role(self, role: str) -> tuple[str, str]:
+        if role not in self._roles:
+            raise ValueError(f"No active entry for role '{role}' in HR Approval Roles list")
+        return self._roles[role]
+
+    def get_all_emails_for_role(self, role: str) -> list[tuple[str, str]]:
+        if role not in self._roles:
+            return []
+        entry = self._roles[role]
+        return [entry] if isinstance(entry[0], str) else list(entry)
+
+    def invalidate_cache(self) -> None:
+        pass
+
+
+# ---------------------------------------------------------------------------
 # Sample request fields
 # ---------------------------------------------------------------------------
 
@@ -134,12 +168,30 @@ BASE_FIELDS = {
 }
 
 ROLE_ENV = {
-    "EMAIL_HR_MANAGER":          "rlperkins@streamflo.com",
-    "EMAIL_PAYROLL_MANAGER":     "gthedford@streamflo.com",
-    "EMAIL_BENEFITS_SPECIALIST": "scarrisalez@streamflo.com",
-    "EMAIL_HR_GENERALIST":       "tparashar@streamflo.com",
-    "APPROVAL_BASE_URL":         "https://streamflo-hr-func.azurewebsites.net",
+    "APPROVAL_BASE_URL":  "https://streamflo-hr-func.azurewebsites.net",
+    "HR_ROLES_LIST_NAME": "HR Approval Roles",
 }
+
+
+# ---------------------------------------------------------------------------
+# Helper — build an orchestrator with all fakes injected
+# ---------------------------------------------------------------------------
+
+def _make_orchestrator(fields: dict, roles: dict = None):
+    from orchestrator import ApprovalOrchestrator
+    fake_sp     = FakeSharePointClient(fields)
+    fake_mailer = FakeMailSender()
+    fake_upload = FakeUploader()
+    fake_roles  = FakeRolesClient(roles)
+
+    with patch.dict(os.environ, ROLE_ENV):
+        o = ApprovalOrchestrator.__new__(ApprovalOrchestrator)
+        o.sp           = fake_sp
+        o.mailer       = fake_mailer
+        o.uploader     = fake_upload
+        o.roles_client = fake_roles
+        o.base_url     = ROLE_ENV["APPROVAL_BASE_URL"]
+    return o, fake_sp, fake_mailer
 
 
 # ---------------------------------------------------------------------------
@@ -148,19 +200,8 @@ ROLE_ENV = {
 
 @pytest.fixture
 def orch(tmp_path):
-    from orchestrator import ApprovalOrchestrator
-
-    fake_sp     = FakeSharePointClient(BASE_FIELDS)
-    fake_mailer = FakeMailSender()
-    fake_upload = FakeUploader()
-
-    with patch.dict(os.environ, ROLE_ENV):
-        o = ApprovalOrchestrator.__new__(ApprovalOrchestrator)
-        o.sp       = fake_sp
-        o.mailer   = fake_mailer
-        o.uploader = fake_upload
-        o.base_url = ROLE_ENV["APPROVAL_BASE_URL"]
-        yield o, fake_sp, fake_mailer
+    o, sp, mailer = _make_orchestrator(BASE_FIELDS)
+    yield o, sp, mailer
 
 
 # ---------------------------------------------------------------------------
@@ -256,13 +297,9 @@ class TestApprovalAdvance:
         o, sp, mailer = orch
         o.handle_new_request("item-001")
 
-        # First click — succeeds, step advances
         o.handle_approval_action("item-001", "rlperkins@streamflo.com", "approve")
         count_after_first = len(mailer.sent)
 
-        # Manually wind CurrentApprovalStep back to 0 to simulate the idempotency
-        # check before the step has advanced in the stored record — i.e. the decision
-        # is already recorded but the click comes in again at step 0.
         sp._store["CurrentApprovalStep"] = 0
 
         result = o.handle_approval_action("item-001", "rlperkins@streamflo.com", "approve")
@@ -382,7 +419,6 @@ class TestCEOWorkflow:
 
     @pytest.fixture
     def ceo_orch(self, tmp_path):
-        from orchestrator import ApprovalOrchestrator
         fields = dict(BASE_FIELDS)
         fields["WorkflowKey"]             = "job_req_backfill_unbudgeted"
         fields["SecondLevelManagerName"]  = "Chris Hayslip"
@@ -394,17 +430,8 @@ class TestCEOWorkflow:
         fields["CEOName"]                 = "Mark McNeill"
         fields["CEOEmail"]                = "mmcneill@streamflo.com"
 
-        fake_sp     = FakeSharePointClient(fields)
-        fake_mailer = FakeMailSender()
-        fake_upload = FakeUploader()
-
-        with patch.dict(os.environ, ROLE_ENV):
-            o = ApprovalOrchestrator.__new__(ApprovalOrchestrator)
-            o.sp       = fake_sp
-            o.mailer   = fake_mailer
-            o.uploader = fake_upload
-            o.base_url = ROLE_ENV["APPROVAL_BASE_URL"]
-            yield o, fake_sp, fake_mailer
+        o, sp, mailer = _make_orchestrator(fields)
+        yield o, sp, mailer
 
     def test_ceo_is_final_step(self, ceo_orch):
         o, sp, mailer = ceo_orch
@@ -439,23 +466,13 @@ class TestNotifyWorkflow:
 
     @pytest.fixture
     def notify_orch(self, tmp_path):
-        from orchestrator import ApprovalOrchestrator
         fields = dict(BASE_FIELDS)
         fields["WorkflowKey"]             = "pcn_termination_discharge"
         fields["SecondLevelManagerName"]  = "Keith Haynes"
         fields["SecondLevelManagerEmail"] = "khaynes@streamflo.com"
 
-        fake_sp     = FakeSharePointClient(fields)
-        fake_mailer = FakeMailSender()
-        fake_upload = FakeUploader()
-
-        with patch.dict(os.environ, ROLE_ENV):
-            o = ApprovalOrchestrator.__new__(ApprovalOrchestrator)
-            o.sp       = fake_sp
-            o.mailer   = fake_mailer
-            o.uploader = fake_upload
-            o.base_url = ROLE_ENV["APPROVAL_BASE_URL"]
-            yield o, fake_sp, fake_mailer
+        o, sp, mailer = _make_orchestrator(fields)
+        yield o, sp, mailer
 
     def test_notify_emails_sent_on_full_approval(self, notify_orch):
         o, sp, mailer = notify_orch
@@ -518,7 +535,6 @@ class TestEmailContent:
         assert "Rae-Lynn" in step2_email.body_html or "HR Manager" in step2_email.body_html
 
     def test_notify_email_has_no_action_buttons(self, orch):
-        from orchestrator import ApprovalOrchestrator
         fields = dict(BASE_FIELDS)
         fields["WorkflowKey"]             = "loa_fmla"
         fields["SecondLevelManagerName"]  = "Keith Haynes"
@@ -526,17 +542,7 @@ class TestEmailContent:
         fields["GMDirectorName"]          = "Quanah Gilmore"
         fields["GMDirectorEmail"]         = "qgilmore@streamflo.com"
 
-        fake_sp     = FakeSharePointClient(fields)
-        fake_mailer = FakeMailSender()
-        fake_upload = FakeUploader()
-
-        with patch.dict(os.environ, ROLE_ENV):
-            o = ApprovalOrchestrator.__new__(ApprovalOrchestrator)
-            o.sp       = fake_sp
-            o.mailer   = fake_mailer
-            o.uploader = fake_upload
-            o.base_url = ROLE_ENV["APPROVAL_BASE_URL"]
-
+        o, fake_sp, fake_mailer = _make_orchestrator(fields)
         o.handle_new_request("item-004")
         o.handle_approval_action("item-004", "rlperkins@streamflo.com", "approve")
         o.handle_approval_action("item-004", "khaynes@streamflo.com", "approve")
@@ -556,3 +562,63 @@ class TestEmailContent:
 
         requester_emails = [m for m in mailer.sent if m.to == "chayslip@streamflo.com"]
         assert any("HR%20Records" in m.body_html for m in requester_emails)
+
+
+# ---------------------------------------------------------------------------
+# Tests — HR Roles client integration
+# ---------------------------------------------------------------------------
+
+class TestHRRolesClientIntegration:
+
+    def test_missing_role_in_list_returns_error(self):
+        """If a role has no active entry, handle_new_request sets Status=Error gracefully."""
+        fields = dict(BASE_FIELDS)
+        # Empty roles client — no HR Manager entry
+        o, sp, mailer = _make_orchestrator(fields, roles={})
+        try:
+            o.handle_new_request("item-001")
+        except Exception:
+            pass
+        # Should not have sent any email
+        assert len(mailer.sent) == 0
+
+    def test_multiple_notify_recipients_all_receive_email(self):
+        """If Benefits Specialist has two active entries both should get FYI emails."""
+        fields = dict(BASE_FIELDS)
+        fields["WorkflowKey"]             = "pcn_termination_discharge"
+        fields["SecondLevelManagerName"]  = "Keith Haynes"
+        fields["SecondLevelManagerEmail"] = "khaynes@streamflo.com"
+
+        multi_roles = dict(STATIC_ROLES)
+        # Override Benefits Specialist with a client that returns two people
+        class MultiRolesClient(FakeRolesClient):
+            def get_all_emails_for_role(self, role):
+                if role == "Benefits Specialist":
+                    return [
+                        ("Sandra Carrisalez", "scarrisalez@streamflo.com"),
+                        ("Backup Benefits",   "backup.benefits@streamflo.com"),
+                    ]
+                return super().get_all_emails_for_role(role)
+
+        from orchestrator import ApprovalOrchestrator
+        fake_sp     = FakeSharePointClient(fields)
+        fake_mailer = FakeMailSender()
+        fake_upload = FakeUploader()
+
+        with patch.dict(os.environ, ROLE_ENV):
+            o = ApprovalOrchestrator.__new__(ApprovalOrchestrator)
+            o.sp           = fake_sp
+            o.mailer       = fake_mailer
+            o.uploader     = fake_upload
+            o.roles_client = MultiRolesClient()
+            o.base_url     = ROLE_ENV["APPROVAL_BASE_URL"]
+
+        o.handle_new_request("item-005")
+        o.handle_approval_action("item-005", "rlperkins@streamflo.com", "approve")
+        o.handle_approval_action("item-005", "khaynes@streamflo.com", "approve")
+        o.handle_approval_action("item-005", "gthedford@streamflo.com", "approve")
+
+        notify_emails = [m for m in fake_mailer.sent if "FYI" in m.subject]
+        recipients = {m.to for m in notify_emails}
+        assert "scarrisalez@streamflo.com"      in recipients
+        assert "backup.benefits@streamflo.com"  in recipients

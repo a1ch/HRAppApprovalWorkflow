@@ -6,16 +6,16 @@ Stateless — all state lives in SharePoint. Safe to retry.
 
 import logging
 import os
-from dataclasses import dataclass
 from typing import Optional
 
-from approval_matrix import WORKFLOWS, ApprovalWorkflow, get_workflow
+from approval_matrix import ApprovalWorkflow, get_workflow
 from email_templates import (
     build_approver_email,
     build_notify_email,
     build_requester_email,
 )
 from hr_records_uploader import HRRecordsUploader
+from hr_roles_client import HRRolesClient
 from mail_sender import GraphMailSender
 from pdf_generator import build_pdf_filename, generate_approval_pdf
 from sharepoint_client import SharePointClient
@@ -23,54 +23,76 @@ from sharepoint_client import SharePointClient
 logger = logging.getLogger(__name__)
 
 
-ROLE_EMAIL_MAP_ENV_KEYS = {
-    "HR Manager": "EMAIL_HR_MANAGER",
-    "Payroll Manager": "EMAIL_PAYROLL_MANAGER",
-    "Benefits Specialist": "EMAIL_BENEFITS_SPECIALIST",
-    "HR Generalist": "EMAIL_HR_GENERALIST",
+# ---------------------------------------------------------------------------
+# Role resolution
+#
+# Two categories of role:
+#   Dynamic — person is named on the request form itself (Direct Manager,
+#             2nd Level Manager, Hiring Manager, GM/Director, Executive, CEO).
+#             Resolved from the SharePoint item fields.
+#
+#   Static  — organisational roles managed by HR (HR Manager, Payroll Manager,
+#             Benefits Specialist, HR Generalist).
+#             Resolved from the HR Approval Roles SharePoint list via HRRolesClient.
+# ---------------------------------------------------------------------------
+
+DYNAMIC_ROLE_FIELD_MAP = {
+    "Direct Manager":    ("DirectManagerName",     "DirectManagerEmail"),
+    "2nd Level Manager": ("SecondLevelManagerName", "SecondLevelManagerEmail"),
+    "Hiring Manager":    ("HiringManagerName",      "HiringManagerEmail"),
+    "GM/Director":       ("GMDirectorName",         "GMDirectorEmail"),
+    "Executive":         ("ExecutiveName",           "ExecutiveEmail"),
+    "CEO":               ("CEOName",                 "CEOEmail"),
 }
 
 
-def _resolve_static_role(role: str) -> tuple[str, str]:
-    env_key = ROLE_EMAIL_MAP_ENV_KEYS.get(role)
-    if env_key:
-        email = os.environ.get(env_key, f"{role.lower().replace(' ','.')}@streamflo.com")
-        return role, email
-    raise ValueError(f"No static mapping for role: {role}")
-
-
 def _resolve_dynamic_role(role: str, request_fields: dict) -> tuple[str, str]:
-    role_field_map = {
-        "Direct Manager":    ("DirectManagerName",      "DirectManagerEmail"),
-        "2nd Level Manager": ("SecondLevelManagerName",  "SecondLevelManagerEmail"),
-        "Hiring Manager":    ("HiringManagerName",       "HiringManagerEmail"),
-        "GM/Director":       ("GMDirectorName",          "GMDirectorEmail"),
-        "Executive":         ("ExecutiveName",            "ExecutiveEmail"),
-        "CEO":               ("CEOName",                  "CEOEmail"),
-    }
-    if role in role_field_map:
-        name_field, email_field = role_field_map[role]
-        name  = request_fields.get(name_field, role)
-        email = request_fields.get(email_field, "")
-        if not email:
-            raise ValueError(f"Missing email for role '{role}' in request fields")
-        return name, email
-    return _resolve_static_role(role)
+    """Resolve a role whose person is recorded on the request itself."""
+    if role not in DYNAMIC_ROLE_FIELD_MAP:
+        raise ValueError(f"'{role}' is not a dynamic role")
+    name_field, email_field = DYNAMIC_ROLE_FIELD_MAP[role]
+    name  = request_fields.get(name_field, role)
+    email = request_fields.get(email_field, "")
+    if not email:
+        raise ValueError(f"Missing email for dynamic role '{role}' in request fields")
+    return name, email
 
 
-def resolve_role(role: str, request_fields: dict) -> tuple[str, str]:
-    try:
-        return _resolve_dynamic_role(role, request_fields)
-    except ValueError:
-        return _resolve_static_role(role)
+def resolve_role(
+    role: str,
+    request_fields: dict,
+    roles_client: Optional[HRRolesClient] = None,
+) -> tuple[str, str]:
+    """
+    Resolve any role to (name, email).
+
+    Order of resolution:
+      1. Dynamic — look up from request fields (no network call)
+      2. Static  — look up from HR Approval Roles list via HRRolesClient
+    """
+    # 1. Try dynamic first
+    if role in DYNAMIC_ROLE_FIELD_MAP:
+        try:
+            return _resolve_dynamic_role(role, request_fields)
+        except ValueError as e:
+            logger.warning("Dynamic role resolution failed for '%s': %s", role, e)
+
+    # 2. Fall back to HR Approval Roles list
+    if roles_client is not None:
+        return roles_client.resolve_role(role)
+
+    raise ValueError(
+        f"Cannot resolve role '{role}': not a dynamic role and no HRRolesClient provided"
+    )
 
 
 class ApprovalOrchestrator:
     def __init__(self):
-        self.sp       = SharePointClient()
-        self.mailer   = GraphMailSender()
-        self.uploader = HRRecordsUploader()
-        self.base_url = os.environ.get("APPROVAL_BASE_URL", "").rstrip("/")
+        self.sp           = SharePointClient()
+        self.mailer       = GraphMailSender()
+        self.uploader     = HRRecordsUploader()
+        self.roles_client = HRRolesClient(self.sp)
+        self.base_url     = os.environ.get("APPROVAL_BASE_URL", "").rstrip("/")
 
     # ── Entry points ──────────────────────────────────────────────────────
 
@@ -119,8 +141,10 @@ class ApprovalOrchestrator:
         if workflow.requires_ceo:
             chain = chain + ["CEO"]
 
-        expected_role               = chain[current_step]
-        expected_name, expected_email = resolve_role(expected_role, fields)
+        expected_role = chain[current_step]
+        expected_name, expected_email = resolve_role(
+            expected_role, fields, self.roles_client
+        )
 
         if approver_email.lower() != expected_email.lower():
             logger.warning(
@@ -179,7 +203,7 @@ class ApprovalOrchestrator:
     ) -> None:
         chain = workflow.approval_chain + (["CEO"] if workflow.requires_ceo else [])
         role  = chain[step]
-        name, email = resolve_role(role, fields)
+        name, email = resolve_role(role, fields, self.roles_client)
         request_details = self._extract_request_details(fields, workflow)
 
         msg = build_approver_email(
@@ -260,22 +284,28 @@ class ApprovalOrchestrator:
         except Exception as e:
             logger.error("PDF generation/upload failed for %s: %s", item_id, e)
 
-        notify_emails: list = []
+        # Notify roles — fan out to ALL active people for each role
+        notify_messages: list = []
         for role in workflow.notify_roles:
             try:
-                name, email = resolve_role(role, fields)
-                msg = build_notify_email(
-                    notify_name=name,
-                    notify_email=email,
-                    request_details=request_details,
-                    workflow_name=workflow.request_type,
-                    notify_role=role,
-                )
-                notify_emails.append(msg)
+                entries = self.roles_client.get_all_emails_for_role(role)
+                if not entries:
+                    # Fall back to dynamic resolution (e.g. Payroll Manager on request)
+                    name, email = resolve_role(role, fields, None)
+                    entries = [(name, email)]
+                for name, email in entries:
+                    msg = build_notify_email(
+                        notify_name=name,
+                        notify_email=email,
+                        request_details=request_details,
+                        workflow_name=workflow.request_type,
+                        notify_role=role,
+                    )
+                    notify_messages.append(msg)
             except Exception as e:
-                logger.warning("Could not send notify email for role %s: %s", role, e)
+                logger.warning("Could not build notify email for role '%s': %s", role, e)
 
-        self.mailer.send_batch(notify_emails)
+        self.mailer.send_batch(notify_messages)
 
         initiator_name  = fields.get("InitiatorName", "")
         initiator_email = fields.get("InitiatorEmail", "")
@@ -289,8 +319,10 @@ class ApprovalOrchestrator:
             )
             self.mailer.send(msg)
 
-        logger.info("Request %s fully approved. PDF: %s. Notified: %s",
-                    item_id, pdf_url or "upload failed", workflow.notify_roles)
+        logger.info(
+            "Request %s fully approved. PDF: %s. Notified roles: %s",
+            item_id, pdf_url or "upload failed", workflow.notify_roles,
+        )
 
     def _extract_request_details(self, fields: dict, workflow: ApprovalWorkflow) -> dict:
         return {
