@@ -2,15 +2,20 @@
 HR Approval Roles list client.
 
 Resolves static role → (name, email) by querying the 'HR Approval Roles'
-SharePoint list. Falls back to env vars if the list lookup fails, so
-deployment isn't broken if the list hasn't been set up yet.
+SharePoint list.
 
 List columns expected:
-  Title    — role name  e.g. "HR Manager"
-  Name     — person's display name
-  Email    — M365 email address
+  Title    — role name e.g. "HR Manager"
+  Person   — Person picker column (preferred — email extracted automatically)
   Active   — Yes/No column (only Active=Yes rows are returned)
   Company  — "Stream-Flo USA LLC" | "Master Flo Valve USA Inc." | "Dycor" | "All"
+
+The Person picker column name is controlled by the HR_ROLES_PERSON_COL app
+setting (default: "Person"). If your list uses a different column name update
+that setting — no code change needed.
+
+Fallback: if the Person picker yields no email, the client also checks plain
+text "Name" and "Email" columns for backwards compatibility.
 
 Rows are cached for CACHE_TTL_SECONDS to avoid hammering Graph API on every
 approval step. Cache is per-process (Azure Function instance), so it resets
@@ -24,6 +29,8 @@ from typing import Optional
 
 import requests
 
+from person_field import extract_person, extract_person_email, extract_person_name
+
 logger = logging.getLogger(__name__)
 
 CACHE_TTL_SECONDS = 300   # 5 minutes
@@ -36,8 +43,9 @@ class HRRolesClient:
         """
         sp_client — a SharePointClient instance (reuses its token + site resolution).
         """
-        self._sp = sp_client
-        self._list_name = os.environ.get("HR_ROLES_LIST_NAME", "HR Approval Roles")
+        self._sp         = sp_client
+        self._list_name  = os.environ.get("HR_ROLES_LIST_NAME", "HR Approval Roles")
+        self._person_col = os.environ.get("HR_ROLES_PERSON_COL", "Person")
         self._cache: dict[str, list[dict]] = {}   # role -> list of {name, email}
         self._cache_time: float = 0.0
         self._list_id: Optional[str] = None
@@ -66,11 +74,27 @@ class HRRolesClient:
 
         for item in rows:
             fields = item.get("fields", {})
-            role  = (fields.get("Title") or "").strip()
-            name  = (fields.get("Name") or "").strip()
-            email = (fields.get("Email") or "").strip()
-            if not role or not email:
+            role = (fields.get("Title") or "").strip()
+            if not role:
                 continue
+
+            # 1. Try Person picker column
+            name, email = extract_person(fields, self._person_col)
+
+            # 2. Fall back to plain text Name / Email columns
+            if not email:
+                email = (fields.get("Email") or "").strip()
+            if not name:
+                name = (fields.get("Name") or "").strip()
+
+            if not email:
+                logger.warning(
+                    "HR Approval Roles: row for role '%s' has no email "
+                    "(checked Person picker '%s' and Email text column). Skipping.",
+                    role, self._person_col,
+                )
+                continue
+
             cache.setdefault(role, []).append({"name": name or role, "email": email})
 
         self._cache = cache
