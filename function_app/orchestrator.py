@@ -16,6 +16,7 @@ from email_templates import (
 )
 from hr_records_uploader import HRRecordsUploader
 from hr_roles_client import HRRolesClient
+from list_configs import LIST_CONFIGS
 from mail_sender import GraphMailSender
 from pdf_generator import build_pdf_filename, generate_approval_pdf
 from sharepoint_client import SharePointClient
@@ -96,8 +97,34 @@ class ApprovalOrchestrator:
 
     # ── Entry points ──────────────────────────────────────────────────────
 
-    def handle_new_request(self, item_id: str) -> None:
-        fields       = self.sp.get_item(item_id)
+    def poll_all_lists(self) -> None:
+        """
+        Timer-driven entry point. Iterates all 6 HR lists and processes
+        any items with Status = 'Pending' (new, not yet started).
+        """
+        for list_key, config in LIST_CONFIGS.items():
+            try:
+                pending = self.sp.get_pending_items_for_list(list_key, config)
+                logger.info("List '%s': %d pending item(s)", list_key, len(pending))
+                for fields in pending:
+                    item_id = str(fields.get("id") or fields.get("ID", ""))
+                    if not item_id:
+                        logger.warning("Skipping item with no ID in list '%s'", list_key)
+                        continue
+                    try:
+                        self.handle_new_request(item_id, list_key=list_key, prefetched_fields=fields)
+                    except Exception as e:
+                        logger.exception("Error handling item %s in list '%s': %s", item_id, list_key, e)
+            except Exception as e:
+                logger.exception("Error polling list '%s': %s", list_key, e)
+
+    def handle_new_request(
+        self,
+        item_id: str,
+        list_key: str = "",
+        prefetched_fields: Optional[dict] = None,
+    ) -> None:
+        fields       = prefetched_fields or self.sp.get_item(item_id)
         workflow_key = fields.get("WorkflowKey", "")
         workflow     = get_workflow(workflow_key)
 
