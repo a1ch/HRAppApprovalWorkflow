@@ -3,6 +3,20 @@ SharePoint list configurations for all 6 HR approval lists.
 Maps exact SharePoint column names to the approval chain roles.
 
 Site: https://streamflogroup.sharepoint.com/hrcp/hrst
+
+Person column notes:
+  When Graph API returns a Person/People Picker field it expands to a sub-object.
+  The internal column name for a Person field called "Employee" will appear in
+  the fields dict as both:
+    - "EmployeeLookupId"   -> SharePoint user ID (integer as string)
+    - "Employee"           -> { "LookupId": 42, "LookupValue": "John Smith" }
+  AND if the list has been configured with profile expansion:
+    - "EmployeeEmail"      -> direct email string
+  We use extract_person_email() in sharepoint_client.py to handle all variants.
+
+  employee_col     = the Person picker column display name (e.g. "Employee").
+                     Set to None for lists where the employee is text-only.
+  employee_name_col = plain text fallback / display name column.
 """
 
 from dataclasses import dataclass, field
@@ -15,10 +29,13 @@ class ListConfig:
     list_path: str              # URL path segment e.g. Lists/Leave%20of%20Absence
     workflow_keys: list[str]    # which workflows from approval_matrix.py this list covers
 
-    # Column name mappings — exact internal SharePoint names
-    employee_name_col: str      # Person or text col for employee
-    initiator_col: str          # who submitted the request
-    initiator_is_person: bool   # True = Person col, False = text col
+    # Employee columns
+    employee_name_col: str      # text / display name column for employee
+    employee_col: Optional[str] = None  # Person picker column name (preferred for email)
+
+    # Initiator
+    initiator_col: str = ""       # who submitted the request
+    initiator_is_person: bool = False  # True = Person col, False = text col
 
     # Approval chain person columns — None if not on this list
     direct_manager_col: Optional[str]       = None
@@ -50,6 +67,7 @@ LIST_CONFIGS: dict[str, ListConfig] = {
         list_path="Lists/Leave%20of%20Absence",
         workflow_keys=["loa_personal", "loa_fmla", "loa_military"],
         employee_name_col="Employee Name",
+        employee_col=None,              # text field — no person picker for employee
         initiator_col="Requested By",
         initiator_is_person=False,
         direct_manager_col="Direct Manager",
@@ -70,6 +88,7 @@ LIST_CONFIGS: dict[str, ListConfig] = {
         list_path="Lists/Employee%20Offer%20Letters",
         workflow_keys=["offer_backfill_budgeted", "offer_backfill_unbudgeted", "offer_new_budgeted", "offer_new_unbudgeted"],
         employee_name_col="Applicant Name",
+        employee_col=None,              # applicant is external candidate, no Entra account
         initiator_col="Hiring Supervisor",
         initiator_is_person=True,
         hiring_manager_col="Hiring Supervisor",
@@ -97,6 +116,7 @@ LIST_CONFIGS: dict[str, ListConfig] = {
             "pcn_rotation_with_pay", "pcn_rotation_no_pay",
         ],
         employee_name_col="Employee Name",
+        employee_col="Employee Name",   # Person picker — update to exact SP internal name if different
         initiator_col="Requested By",
         initiator_is_person=True,
         direct_manager_col="Current Supervisor",
@@ -121,6 +141,7 @@ LIST_CONFIGS: dict[str, ListConfig] = {
         list_path="Lists/Termination%20Form",
         workflow_keys=["pcn_termination_discharge", "pcn_termination_resignation", "pcn_termination_retirement"],
         employee_name_col="Employee Name",
+        employee_col="Employee Name",   # Person picker — update to exact SP internal name if different
         initiator_col="Current Supervisor",
         initiator_is_person=True,
         direct_manager_col="Current Supervisor",
@@ -145,6 +166,7 @@ LIST_CONFIGS: dict[str, ListConfig] = {
             "job_req_temp_budgeted", "job_req_temp_unbudgeted",
         ],
         employee_name_col="Replaced Employee",
+        employee_col="Replaced Employee",  # Person picker if it's an existing employee
         initiator_col="Requested By",
         initiator_is_person=True,
         hiring_manager_col="Hiring Supervisor",
@@ -165,6 +187,7 @@ LIST_CONFIGS: dict[str, ListConfig] = {
         list_path="Lists/Promotion%20Title%20Change%20With%20Pay",
         workflow_keys=["promo_salaried", "promo_hourly", "promo_salaried_rate", "promo_hourly_rate"],
         employee_name_col="Employee",
+        employee_col="Employee",        # Person picker
         initiator_col="Created By",
         initiator_is_person=True,
         second_level_manager_col="2nd Level Manager",
