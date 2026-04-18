@@ -9,6 +9,7 @@ Functions:
   5. HealthCheck        — simple GET for monitoring
   6. DebugRoles         — temp: reads HR Approval Roles list and returns what was found
   7. DebugLists         — temp: checks all 6 HR lists for correct column configuration
+  8. DebugLookups       — temp: lookup column audit — counts, redundant cols, duplicates
 """
 
 import json
@@ -252,21 +253,19 @@ def debug_roles(req: func.HttpRequest) -> func.HttpResponse:
 
 
 # ── 7. Debug lists ────────────────────────────────────────────────────────
-# Fetches each list's actual columns from Graph and checks them against
-# what list_configs.py expects. Returns a per-list pass/fail report.
 # TODO: remove before going live
 
 @app.function_name("DebugLists")
 @app.route(route="debug-lists", methods=["GET"])
 def debug_lists(req: func.HttpRequest) -> func.HttpResponse:
     try:
-        orch  = get_orchestrator()
-        sp    = orch.sp
-        graph = "https://graph.microsoft.com/v1.0"
+        orch    = get_orchestrator()
+        sp      = orch.sp
+        graph   = "https://graph.microsoft.com/v1.0"
         site_id = sp._get_site_id()
         headers = sp._headers()
 
-        report = {}
+        report     = {}
         overall_ok = True
 
         for list_key, config in LIST_CONFIGS.items():
@@ -290,11 +289,147 @@ def debug_lists(req: func.HttpRequest) -> func.HttpResponse:
         )
 
 
+# ── 8. Debug lookups ──────────────────────────────────────────────────────
+# Counts lookup/Person columns per list, flags redundant ones (resolved by
+# the app at runtime so don't need to be on the list), and spots duplicates.
+# SharePoint limit: 12 lookup columns per list.
+# TODO: remove before going live
+
+# Columns the app resolves dynamically — don't need to be Person pickers on the list.
+# They can be plain text or removed entirely.
+APP_RESOLVED_COLS = {
+    "HR Manager", "2nd Level Manager", "Benefits Specialist",
+    "Payroll Manager", "HR Generalist", "GM Director",
+    "Executive", "CEO",
+}
+
+# Columns that look like duplicates or legacy fields from old workflows
+LEGACY_PATTERNS = [
+    "Approver", "Approved By", "Authorized By",  # old single-approver fields
+]
+
+@app.function_name("DebugLookups")
+@app.route(route="debug-lookups", methods=["GET"])
+def debug_lookups(req: func.HttpRequest) -> func.HttpResponse:
+    try:
+        orch    = get_orchestrator()
+        sp      = orch.sp
+        graph   = "https://graph.microsoft.com/v1.0"
+        site_id = sp._get_site_id()
+        headers = sp._headers()
+
+        # Fetch all lists once
+        r = http.get(f"{graph}/sites/{site_id}/lists", headers=headers, timeout=30)
+        r.raise_for_status()
+        all_lists = {lst["displayName"]: lst["id"] for lst in r.json().get("value", [])}
+
+        report     = {}
+        overall_ok = True
+        SP_LOOKUP_LIMIT = 12
+
+        for list_key, config in LIST_CONFIGS.items():
+            list_id = all_lists.get(config.display_name)
+            if not list_id:
+                report[list_key] = {"error": f"List '{config.display_name}' not found"}
+                overall_ok = False
+                continue
+
+            # Fetch columns with full detail
+            r2 = http.get(
+                f"{graph}/sites/{site_id}/lists/{list_id}/columns",
+                headers=headers, timeout=30,
+            )
+            r2.raise_for_status()
+            columns = r2.json().get("value", [])
+
+            lookup_cols   = []
+            person_cols   = []
+            redundant     = []
+            legacy        = []
+            name_seen     = {}   # lowercase name -> list of real names (for duplicate detection)
+
+            for col in columns:
+                name     = col.get("displayName", "")
+                key      = name.lower()
+                col_type = _get_col_type(col)
+                hidden   = col.get("hidden", False)
+                readonly = col.get("readOnly", False)
+
+                # Track for duplicate detection (skip system/hidden cols)
+                if not hidden and not readonly:
+                    name_seen.setdefault(key, []).append(name)
+
+                # Count lookup-type columns (Person counts as lookup in SP)
+                if col.get("personOrGroup") or col.get("lookup"):
+                    lookup_cols.append({"name": name, "type": col_type, "hidden": hidden})
+
+                if col.get("personOrGroup"):
+                    person_cols.append(name)
+
+                    # Flag app-resolved Person columns as redundant
+                    if name in APP_RESOLVED_COLS:
+                        redundant.append({
+                            "name": name,
+                            "reason": "App resolves this role from Entra/HR Roles list — "
+                                      "can be changed to Single line text or removed",
+                        })
+
+                # Flag legacy/duplicate-looking columns
+                if any(pat.lower() in name.lower() for pat in LEGACY_PATTERNS):
+                    legacy.append({
+                        "name": name,
+                        "type": col_type,
+                        "reason": "Looks like a legacy single-approver field — "
+                                  "may be superseded by ApproverStep0/1/2 columns",
+                    })
+
+            # Find actual duplicates (same name, different casing or truly duplicated)
+            duplicates = [
+                names for names in name_seen.values() if len(names) > 1
+            ]
+
+            lookup_count = len(lookup_cols)
+            at_limit     = lookup_count >= SP_LOOKUP_LIMIT
+            if at_limit:
+                overall_ok = False
+
+            report[list_key] = {
+                "display_name":  config.display_name,
+                "lookup_count":  lookup_count,
+                "lookup_limit":  SP_LOOKUP_LIMIT,
+                "at_limit":      at_limit,
+                "lookup_columns": lookup_cols,
+                "redundant_person_cols": redundant,
+                "legacy_cols":   legacy,
+                "duplicates":    duplicates,
+            }
+
+        return func.HttpResponse(
+            json.dumps({
+                "overall": "OK" if overall_ok else "ACTION NEEDED",
+                "summary": {
+                    lk: {
+                        "lookup_count": v["lookup_count"],
+                        "at_limit":     v["at_limit"],
+                        "redundant":    len(v["redundant_person_cols"]),
+                        "legacy":       len(v["legacy_cols"]),
+                    }
+                    for lk, v in report.items() if "error" not in v
+                },
+                "detail": report,
+            }, indent=2),
+            mimetype="application/json",
+        )
+    except Exception as e:
+        return func.HttpResponse(
+            json.dumps({"status": "error", "message": str(e)}),
+            status_code=500, mimetype="application/json",
+        )
+
+
+# ── Shared helpers ────────────────────────────────────────────────────────
+
 def _check_list(graph: str, site_id: str, headers: dict, list_key: str, config: ListConfig) -> dict:
-    """
-    Fetch a list's actual columns from Graph and compare against what
-    list_configs.py expects. Returns a dict with the check results.
-    """
     result = {
         "display_name": config.display_name,
         "list_found": False,
@@ -307,11 +442,10 @@ def _check_list(graph: str, site_id: str, headers: dict, list_key: str, config: 
         "error": None,
     }
 
-    # Find the list by display name
     try:
         r = http.get(f"{graph}/sites/{site_id}/lists", headers=headers, timeout=30)
         r.raise_for_status()
-        lists = r.json().get("value", [])
+        lists   = r.json().get("value", [])
         list_id = None
         for lst in lists:
             if lst["displayName"].lower() == config.display_name.lower():
@@ -319,110 +453,75 @@ def _check_list(graph: str, site_id: str, headers: dict, list_key: str, config: 
                 break
 
         if not list_id:
-            result["error"] = f"List '{config.display_name}' not found on site. Available: {[l['displayName'] for l in lists]}"
+            result["error"] = f"List '{config.display_name}' not found. Available: {[l['displayName'] for l in lists]}"
             return result
 
         result["list_found"] = True
-        result["list_id"] = list_id
+        result["list_id"]    = list_id
     except Exception as e:
         result["error"] = f"Failed to fetch lists: {e}"
         return result
 
-    # Fetch the list's columns
     try:
         r = http.get(f"{graph}/sites/{site_id}/lists/{list_id}/columns", headers=headers, timeout=30)
         r.raise_for_status()
         columns = r.json().get("value", [])
-        # Build a map of displayName -> column type info
-        col_map = {}
-        for col in columns:
-            name = col.get("displayName", "")
-            col_type = _get_col_type(col)
-            col_map[name] = col_type
+        col_map = {col.get("displayName", ""): _get_col_type(col) for col in columns}
         result["actual_columns"] = sorted(col_map.keys())
-        result["column_types"] = col_map
+        result["column_types"]   = col_map
     except Exception as e:
         result["error"] = f"Failed to fetch columns: {e}"
         return result
 
-    # Build the list of columns we expect from list_configs
     expected = _get_expected_columns(config)
     result["expected_columns"] = sorted(expected)
 
-    # Check which are present and which are missing
     missing = []
     present = []
     for col in expected:
         if col in col_map:
             present.append({"column": col, "type": col_map[col]})
         else:
-            # Try case-insensitive match and report the closest real name
-            real_name = next(
-                (k for k in col_map if k.lower() == col.lower()), None
-            )
+            real_name = next((k for k in col_map if k.lower() == col.lower()), None)
             if real_name:
                 present.append({
                     "column": col,
-                    "type": col_map[real_name],
-                    "note": f"Found as '{real_name}' (case mismatch — update list_configs.py)",
+                    "type":   col_map[real_name],
+                    "note":   f"Found as '{real_name}' (case mismatch — update list_configs.py)",
                 })
             else:
                 missing.append(col)
 
     result["missing_columns"] = missing
     result["present_columns"] = present
-
     return result
 
 
 def _get_col_type(col: dict) -> str:
-    """Return a human-readable column type string from a Graph column definition."""
     if col.get("personOrGroup"):
-        allow_multiple = col["personOrGroup"].get("allowMultipleSelection", False)
-        return "Person (multi)" if allow_multiple else "Person"
+        return "Person (multi)" if col["personOrGroup"].get("allowMultipleSelection") else "Person"
     if col.get("choice"):
         choices = col["choice"].get("choices", [])
         return f"Choice ({', '.join(choices[:4])}{'...' if len(choices) > 4 else ''})"
-    if col.get("boolean"):
-        return "Yes/No"
-    if col.get("dateTime"):
-        return "DateTime"
-    if col.get("number"):
-        return "Number"
-    if col.get("lookup"):
-        return "Lookup"
+    if col.get("boolean"):   return "Yes/No"
+    if col.get("dateTime"):  return "DateTime"
+    if col.get("number"):    return "Number"
+    if col.get("lookup"):    return "Lookup"
     if col.get("text"):
-        multiline = col["text"].get("allowMultipleLines", False)
-        return "Multiline text" if multiline else "Single line text"
-    if col.get("calculated"):
-        return "Calculated"
+        return "Multiline text" if col["text"].get("allowMultipleLines") else "Single line text"
+    if col.get("calculated"): return "Calculated"
     return "Unknown"
 
 
 def _get_expected_columns(config: ListConfig) -> list[str]:
-    """
-    Return the list of column display names the app needs to read/write
-    for a given list config, based on all non-None column references.
-    """
     cols = set()
-
-    # Core columns always needed
     cols.add(config.status_col)
     cols.add(config.employee_name_col)
-    if config.employee_col:
-        cols.add(config.employee_col)
-    if config.initiator_col:
-        cols.add(config.initiator_col)
-    if config.request_type_col:
-        cols.add(config.request_type_col)
-    if config.effective_date_col:
-        cols.add(config.effective_date_col)
-    if config.notes_col:
-        cols.add(config.notes_col)
-    if config.url_col:
-        cols.add(config.url_col)
-
-    # Approval chain columns
+    for attr in ["employee_col", "initiator_col", "request_type_col",
+                 "effective_date_col", "notes_col", "url_col"]:
+        val = getattr(config, attr, None)
+        if val:
+            cols.add(val)
     for attr in [
         "direct_manager_col", "second_level_manager_col", "hr_manager_col",
         "gm_director_col", "executive_col", "ceo_col", "hiring_manager_col",
@@ -431,16 +530,10 @@ def _get_expected_columns(config: ListConfig) -> list[str]:
         val = getattr(config, attr, None)
         if val:
             cols.add(val)
-
-    # Workflow columns the app writes back
-    cols.add("WorkflowKey")
-    cols.add("CurrentApprovalStep")
-    cols.add("WorkflowCategory")
-    cols.add("InitiatorName")
-    cols.add("InitiatorEmail")
-    cols.add("EmployeeEmail")
-    cols.add("ApprovalRecordURL")
-
+    cols.update([
+        "WorkflowKey", "CurrentApprovalStep", "WorkflowCategory",
+        "InitiatorName", "InitiatorEmail", "EmployeeEmail", "ApprovalRecordURL",
+    ])
     return sorted(cols)
 
 
