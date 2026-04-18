@@ -1,7 +1,12 @@
 """
 Approval orchestration engine.
-Handles the full lifecycle: trigger → sequential approval chain → notifications → completion.
-Stateless — all state lives in SharePoint. Safe to retry.
+Handles the full lifecycle: trigger -> sequential approval chain -> notifications -> completion.
+Stateless -- all state lives in SharePoint. Safe to retry.
+
+Role resolution order:
+  1. Entra manager chain  -- Direct Manager, 2nd Level Manager (walked from employee)
+  2. HR Approval Roles list -- HR Manager, Payroll Manager, Benefits Specialist, HR Generalist
+  3. Request form fields  -- GM/Director, Executive, CEO (still on form as fallback)
 """
 
 import logging
@@ -14,6 +19,7 @@ from email_templates import (
     build_notify_email,
     build_requester_email,
 )
+from entra_client import EntraClient
 from hr_records_uploader import HRRecordsUploader
 from hr_roles_client import HRRolesClient
 from list_configs import LIST_CONFIGS
@@ -27,64 +33,77 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Role resolution
 #
-# Two categories of role:
-#   Dynamic — person is named on the request form itself (Direct Manager,
-#             2nd Level Manager, Hiring Manager, GM/Director, Executive, CEO).
-#             Resolved from the SharePoint item fields.
+# Roles fall into three buckets:
 #
-#   Static  — organisational roles managed by HR (HR Manager, Payroll Manager,
-#             Benefits Specialist, HR Generalist).
-#             Resolved from the HR Approval Roles SharePoint list via HRRolesClient.
+#   Entra chain  -- resolved by walking the employee's manager chain in Entra ID.
+#                   No columns needed on the request form.
+#     "Direct Manager"    -> chain level 0
+#     "2nd Level Manager" -> chain level 1
+#
+#   HR Roles list -- org-wide static roles maintained by HR in SharePoint.
+#     "HR Manager", "Payroll Manager", "Benefits Specialist", "HR Generalist"
+#
+#   Form fields  -- still read from the request item for roles that may not
+#                   follow the standard Entra hierarchy (GM/Director, Executive, CEO).
+#                   These fall back to the HR Roles list if the field is blank.
 # ---------------------------------------------------------------------------
 
-DYNAMIC_ROLE_FIELD_MAP = {
-    "Direct Manager":    ("DirectManagerName",     "DirectManagerEmail"),
-    "2nd Level Manager": ("SecondLevelManagerName", "SecondLevelManagerEmail"),
-    "Hiring Manager":    ("HiringManagerName",      "HiringManagerEmail"),
-    "GM/Director":       ("GMDirectorName",         "GMDirectorEmail"),
-    "Executive":         ("ExecutiveName",           "ExecutiveEmail"),
-    "CEO":               ("CEOName",                 "CEOEmail"),
+ENTRA_CHAIN_ROLES: dict[str, int] = {
+    "Direct Manager":    0,
+    "2nd Level Manager": 1,
 }
 
-
-def _resolve_dynamic_role(role: str, request_fields: dict) -> tuple[str, str]:
-    """Resolve a role whose person is recorded on the request itself."""
-    if role not in DYNAMIC_ROLE_FIELD_MAP:
-        raise ValueError(f"'{role}' is not a dynamic role")
-    name_field, email_field = DYNAMIC_ROLE_FIELD_MAP[role]
-    name  = request_fields.get(name_field, role)
-    email = request_fields.get(email_field, "")
-    if not email:
-        raise ValueError(f"Missing email for dynamic role '{role}' in request fields")
-    return name, email
+FORM_FIELD_ROLES: dict[str, tuple[str, str]] = {
+    # role name -> (name field on SP item, email field on SP item)
+    "GM/Director": ("GMDirectorName",  "GMDirectorEmail"),
+    "Executive":   ("ExecutiveName",   "ExecutiveEmail"),
+    "CEO":         ("CEOName",         "CEOEmail"),
+    "Hiring Manager": ("HiringManagerName", "HiringManagerEmail"),
+}
 
 
 def resolve_role(
     role: str,
     request_fields: dict,
-    roles_client: Optional[HRRolesClient] = None,
+    employee_email: str,
+    entra: EntraClient,
+    roles_client: HRRolesClient,
 ) -> tuple[str, str]:
     """
-    Resolve any role to (name, email).
+    Resolve any approval role to (name, email).
 
-    Order of resolution:
-      1. Dynamic — look up from request fields (no network call)
-      2. Static  — look up from HR Approval Roles list via HRRolesClient
+    Resolution order:
+      1. Entra manager chain (Direct Manager, 2nd Level Manager)
+      2. Form fields (GM/Director, Executive, CEO, Hiring Manager)
+         with fallback to HR Roles list if field is blank
+      3. HR Roles list (HR Manager, Payroll Manager, Benefits Specialist, HR Generalist)
     """
-    # 1. Try dynamic first
-    if role in DYNAMIC_ROLE_FIELD_MAP:
+    # 1. Entra manager chain
+    if role in ENTRA_CHAIN_ROLES and employee_email:
+        level = ENTRA_CHAIN_ROLES[role]
         try:
-            return _resolve_dynamic_role(role, request_fields)
+            return entra.resolve_manager_role(employee_email, level=level)
         except ValueError as e:
-            logger.warning("Dynamic role resolution failed for '%s': %s", role, e)
+            logger.warning(
+                "Entra chain resolution failed for '%s' (level %d, employee %s): %s — "
+                "falling back to form fields / HR Roles list",
+                role, level, employee_email, e,
+            )
 
-    # 2. Fall back to HR Approval Roles list
-    if roles_client is not None:
-        return roles_client.resolve_role(role)
+    # 2. Form fields
+    if role in FORM_FIELD_ROLES:
+        name_field, email_field = FORM_FIELD_ROLES[role]
+        name  = request_fields.get(name_field, "").strip()
+        email = request_fields.get(email_field, "").strip()
+        if email:
+            return name or role, email
+        # Field blank -- fall through to HR Roles list
+        logger.debug(
+            "Form field empty for role '%s', falling back to HR Roles list", role
+        )
 
-    raise ValueError(
-        f"Cannot resolve role '{role}': not a dynamic role and no HRRolesClient provided"
-    )
+    # 3. HR Roles list
+    return roles_client.resolve_role(role)
 
 
 class ApprovalOrchestrator:
@@ -92,6 +111,7 @@ class ApprovalOrchestrator:
         self.sp           = SharePointClient()
         self.mailer       = GraphMailSender()
         self.uploader     = HRRecordsUploader()
+        self.entra        = EntraClient()
         self.roles_client = HRRolesClient(self.sp)
         self.base_url     = os.environ.get("APPROVAL_BASE_URL", "").rstrip("/")
 
@@ -112,9 +132,13 @@ class ApprovalOrchestrator:
                         logger.warning("Skipping item with no ID in list '%s'", list_key)
                         continue
                     try:
-                        self.handle_new_request(item_id, list_key=list_key, prefetched_fields=fields)
+                        self.handle_new_request(
+                            item_id, list_key=list_key, prefetched_fields=fields
+                        )
                     except Exception as e:
-                        logger.exception("Error handling item %s in list '%s': %s", item_id, list_key, e)
+                        logger.exception(
+                            "Error handling item %s in list '%s': %s", item_id, list_key, e
+                        )
             except Exception as e:
                 logger.exception("Error polling list '%s': %s", list_key, e)
 
@@ -148,14 +172,10 @@ class ApprovalOrchestrator:
         self,
         item_id: str,
         approver_email: str,
-        action: str,        # "approve" | "reject"
+        action: str,
         comments: str = "",
         list_key: str = "",
     ) -> dict:
-        """
-        Called when an approver clicks Approve or Reject (after entering comments).
-        Returns a dict with outcome info for the HTTP response.
-        """
         fields       = self.sp.get_item(item_id)
         workflow_key = fields.get("WorkflowKey", "")
         workflow     = get_workflow(workflow_key)
@@ -164,13 +184,12 @@ class ApprovalOrchestrator:
             return {"error": "Workflow not found", "request_id": item_id}
 
         current_step = int(fields.get("CurrentApprovalStep", 0))
-        chain = workflow.approval_chain
-        if workflow.requires_ceo:
-            chain = chain + ["CEO"]
+        chain = workflow.approval_chain + (["CEO"] if workflow.requires_ceo else [])
+        employee_email = fields.get("EmployeeEmail", "") or fields.get("InitiatorEmail", "")
 
         expected_role = chain[current_step]
         expected_name, expected_email = resolve_role(
-            expected_role, fields, self.roles_client
+            expected_role, fields, employee_email, self.entra, self.roles_client
         )
 
         if approver_email.lower() != expected_email.lower():
@@ -220,6 +239,15 @@ class ApprovalOrchestrator:
 
     # ── Internal helpers ──────────────────────────────────────────────────
 
+    def _get_employee_email(self, fields: dict) -> str:
+        """Best-effort extraction of the employee's email from the request fields."""
+        return (
+            fields.get("EmployeeEmail", "")
+            or fields.get("EmployeeLookupId", "")  # Graph person column
+            or fields.get("InitiatorEmail", "")
+            or ""
+        ).strip()
+
     def _send_approver_email(
         self,
         item_id: str,
@@ -230,7 +258,10 @@ class ApprovalOrchestrator:
     ) -> None:
         chain = workflow.approval_chain + (["CEO"] if workflow.requires_ceo else [])
         role  = chain[step]
-        name, email = resolve_role(role, fields, self.roles_client)
+        employee_email = self._get_employee_email(fields)
+        name, email = resolve_role(
+            role, fields, employee_email, self.entra, self.roles_client
+        )
         request_details = self._extract_request_details(fields, workflow)
 
         msg = build_approver_email(
@@ -269,7 +300,7 @@ class ApprovalOrchestrator:
                 rejection_comments=comments,
             )
             self.mailer.send(msg)
-        logger.info("Request %s rejected by %s. Comments: %s", item_id, rejected_by, comments)
+        logger.info("Request %s rejected by %s", item_id, rejected_by)
 
     def _handle_full_approval(
         self,
@@ -307,19 +338,27 @@ class ApprovalOrchestrator:
                 approved_date=fully_approved_date,
             )
             self.sp.update_item(item_id, {"ApprovalRecordURL": pdf_url})
-            logger.info("Approval PDF saved to HR Records: %s", pdf_url)
+            logger.info("Approval PDF saved: %s", pdf_url)
         except Exception as e:
             logger.error("PDF generation/upload failed for %s: %s", item_id, e)
 
-        # Notify roles — fan out to ALL active people for each role
+        # Notify roles
         notify_messages: list = []
+        employee_email = self._get_employee_email(fields)
         for role in workflow.notify_roles:
             try:
-                entries = self.roles_client.get_all_emails_for_role(role)
-                if not entries:
-                    # Fall back to dynamic resolution (e.g. Payroll Manager on request)
-                    name, email = resolve_role(role, fields, None)
+                # Try Entra chain first for manager-type notify roles
+                if role in ENTRA_CHAIN_ROLES and employee_email:
+                    level = ENTRA_CHAIN_ROLES[role]
+                    name, email = self.entra.resolve_manager_role(employee_email, level=level)
                     entries = [(name, email)]
+                else:
+                    entries = self.roles_client.get_all_emails_for_role(role)
+                    if not entries:
+                        name, email = resolve_role(
+                            role, fields, employee_email, self.entra, self.roles_client
+                        )
+                        entries = [(name, email)]
                 for name, email in entries:
                     msg = build_notify_email(
                         notify_name=name,
@@ -347,7 +386,7 @@ class ApprovalOrchestrator:
             self.mailer.send(msg)
 
         logger.info(
-            "Request %s fully approved. PDF: %s. Notified roles: %s",
+            "Request %s fully approved. PDF: %s. Notified: %s",
             item_id, pdf_url or "upload failed", workflow.notify_roles,
         )
 
@@ -355,6 +394,7 @@ class ApprovalOrchestrator:
         return {
             "request_type":    workflow.request_type,
             "employee_name":   fields.get("EmployeeName", ""),
+            "employee_email":  fields.get("EmployeeEmail", ""),
             "employee_number": fields.get("EmployeeNumber", ""),
             "initiator_name":  fields.get("InitiatorName", ""),
             "submitted_date":  fields.get("Created", ""),
