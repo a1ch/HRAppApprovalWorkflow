@@ -5,10 +5,12 @@ Resolves static role → (name, email) by querying the 'HR Approval Roles'
 SharePoint list.
 
 List columns expected:
-  Title    — role name e.g. "HR Manager"
-  Person   — Person picker column (preferred — email extracted automatically)
+  Title    — Choice column, restricted to VALID_ROLES values below.
+             Using a Choice column prevents typos and ensures the value
+             always matches what the approval matrix expects.
+  Person   — Person picker column (email extracted automatically from Entra)
   Active   — Yes/No column (only Active=Yes rows are returned)
-  Company  — "Stream-Flo USA LLC" | "Master Flo Valve USA Inc." | "Dycor" | "All"
+  Company  — Choice: "Stream-Flo USA LLC" | "Master Flo Valve USA Inc." | "Dycor" | "All"
 
 The Person picker column name is controlled by the HR_ROLES_PERSON_COL app
 setting (default: "Person"). If your list uses a different column name update
@@ -29,11 +31,25 @@ from typing import Optional
 
 import requests
 
-from person_field import extract_person, extract_person_email, extract_person_name
+from person_field import extract_person
 
 logger = logging.getLogger(__name__)
 
 CACHE_TTL_SECONDS = 300   # 5 minutes
+
+# These are the exact choice values that must be configured in the
+# SharePoint "Title" Choice column on the HR Approval Roles list.
+# Any row whose Title is not in this set will be skipped with a warning.
+VALID_ROLES: frozenset[str] = frozenset({
+    "HR Manager",
+    "Payroll Manager",
+    "Benefits Specialist",
+    "HR Generalist",
+    "GM/Director",
+    "Executive",
+    "CEO",
+    "Hiring Manager",
+})
 
 
 class HRRolesClient:
@@ -75,7 +91,17 @@ class HRRolesClient:
         for item in rows:
             fields = item.get("fields", {})
             role = (fields.get("Title") or "").strip()
+
             if not role:
+                continue
+
+            # Validate against known roles — catches list misconfiguration early
+            if role not in VALID_ROLES:
+                logger.warning(
+                    "HR Approval Roles: unknown role '%s' in list — skipping. "
+                    "Valid choices are: %s",
+                    role, sorted(VALID_ROLES),
+                )
                 continue
 
             # 1. Try Person picker column
@@ -141,7 +167,7 @@ class HRRolesClient:
         if not entries:
             raise ValueError(
                 f"No active entry for role '{role}' in HR Approval Roles list. "
-                "Add an active row for this role before processing requests."
+                f"Valid roles are: {sorted(VALID_ROLES)}"
             )
         return entries[0]["name"], entries[0]["email"]
 
