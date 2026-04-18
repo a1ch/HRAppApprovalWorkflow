@@ -5,12 +5,16 @@ Resolves static role → (name, email) by querying the 'HR Approval Roles'
 SharePoint list.
 
 List columns expected:
-  Title    — Choice column, restricted to VALID_ROLES values below.
-             Using a Choice column prevents typos and ensures the value
-             always matches what the approval matrix expects.
+  Role     — Choice column (NOT Title — Title is a SharePoint system field that
+             cannot be changed to a Choice type. Make Title not required and
+             hide it from forms, then use this separate Role Choice column.)
+             Valid choices must match VALID_ROLES exactly.
   Person   — Person picker column (email extracted automatically from Entra)
   Active   — Yes/No column (only Active=Yes rows are returned)
   Company  — Choice: "Stream-Flo USA LLC" | "Master Flo Valve USA Inc." | "Dycor" | "All"
+
+The Role column name defaults to "Role" and is controlled by the
+HR_ROLES_ROLE_COL app setting if your list uses a different name.
 
 The Person picker column name is controlled by the HR_ROLES_PERSON_COL app
 setting (default: "Person"). If your list uses a different column name update
@@ -38,8 +42,8 @@ logger = logging.getLogger(__name__)
 CACHE_TTL_SECONDS = 300   # 5 minutes
 
 # These are the exact choice values that must be configured in the
-# SharePoint "Title" Choice column on the HR Approval Roles list.
-# Any row whose Title is not in this set will be skipped with a warning.
+# SharePoint "Role" Choice column on the HR Approval Roles list.
+# Any row whose Role is not in this set will be skipped with a warning.
 VALID_ROLES: frozenset[str] = frozenset({
     "HR Manager",
     "Payroll Manager",
@@ -61,6 +65,7 @@ class HRRolesClient:
         """
         self._sp         = sp_client
         self._list_name  = os.environ.get("HR_ROLES_LIST_NAME", "HR Approval Roles")
+        self._role_col   = os.environ.get("HR_ROLES_ROLE_COL", "Role")
         self._person_col = os.environ.get("HR_ROLES_PERSON_COL", "Person")
         self._cache: dict[str, list[dict]] = {}   # role -> list of {name, email}
         self._cache_time: float = 0.0
@@ -90,17 +95,24 @@ class HRRolesClient:
 
         for item in rows:
             fields = item.get("fields", {})
-            role = (fields.get("Title") or "").strip()
+
+            # Read from the Role choice column (not Title)
+            role = (fields.get(self._role_col) or "").strip()
 
             if not role:
+                logger.warning(
+                    "HR Approval Roles: row has empty '%s' column — skipping. "
+                    "Make sure the Role Choice column is filled in.",
+                    self._role_col,
+                )
                 continue
 
-            # Validate against known roles — catches list misconfiguration early
+            # Validate against known roles
             if role not in VALID_ROLES:
                 logger.warning(
-                    "HR Approval Roles: unknown role '%s' in list — skipping. "
+                    "HR Approval Roles: unknown role '%s' in '%s' column — skipping. "
                     "Valid choices are: %s",
-                    role, sorted(VALID_ROLES),
+                    role, self._role_col, sorted(VALID_ROLES),
                 )
                 continue
 
