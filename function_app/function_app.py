@@ -2,11 +2,11 @@
 Azure Function App entry points.
 
 Functions:
-  1. sp_trigger        — fires when a new SharePoint list item is created
-  2. approval_action   — approver clicks Approve in their email (records immediately)
-  3. rejection_form_get — approver clicks Reject — shows a form to enter reason
-  4. rejection_form_post — processes the rejection form submission
-  5. health_check      — simple GET for monitoring
+  1. PollNewRequests    — timer, runs every 5 min, polls all 6 HR lists for Pending items
+  2. ApprovalAction     — approver clicks Approve in their email (records immediately)
+  3. RejectionFormGet   — approver clicks Reject — shows a form to enter reason
+  4. RejectionFormPost  — processes the rejection form submission
+  5. HealthCheck        — simple GET for monitoring
 """
 
 import json
@@ -23,23 +23,16 @@ app = func.FunctionApp(http_auth_level=func.AuthLevel.FUNCTION)
 orchestrator = ApprovalOrchestrator()
 
 
-# ── 1. SharePoint trigger ─────────────────────────────────────────────────
+# ── 1. Timer trigger — polls all lists every 5 minutes ───────────────────
 
-@app.function_name("SharePointNewRequest")
-@app.sp_change_feed_trigger(
-    arg_name="changes",
-    connection="SharePointConnection",
-    list_id="%SP_LIST_NAME%",
-    event_type="created",
-)
-def sp_trigger(changes: func.SPChangeInput) -> None:
-    for change in changes:
-        item_id = str(change.item_id)
-        logger.info("New SharePoint item detected: %s", item_id)
-        try:
-            orchestrator.handle_new_request(item_id)
-        except Exception as e:
-            logger.exception("Error handling new request %s: %s", item_id, e)
+@app.function_name("PollNewRequests")
+@app.timer_trigger(arg_name="timer", schedule="0 */5 * * * *", run_on_startup=False)
+def poll_new_requests(timer: func.TimerRequest) -> None:
+    logger.info("PollNewRequests timer fired")
+    try:
+        orchestrator.poll_all_lists()
+    except Exception as e:
+        logger.exception("Error during list poll: %s", e)
 
 
 # ── 2. Approval action — Approve only ─────────────────────────────────────
