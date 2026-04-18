@@ -6,10 +6,10 @@ safe to instantiate during Azure Function worker init before app settings
 have been injected into os.environ.
 
 Required App Settings:
-  SP_TENANT_ID    - Azure AD tenant ID
-  SP_CLIENT_ID    - App registration client ID
+  SP_TENANT_ID     - Azure AD tenant ID
+  SP_CLIENT_ID     - App registration client ID
   SP_CLIENT_SECRET - App registration client secret
-  SP_SITE_URL     - e.g. https://streamflogroup.sharepoint.com/hrcp/hrst
+  SP_SITE_URL      - e.g. https://streamflogroup.sharepoint.com/hrcp/hrst
 """
 
 import os
@@ -30,13 +30,11 @@ class SharePointClient:
     GRAPH_BASE = "https://graph.microsoft.com/v1.0"
 
     def __init__(self):
-        # Do NOT read env vars here — read lazily in _credentials()
         self._token: Optional[str] = None
         self._site_id: Optional[str] = None
         self._list_id_cache: dict[str, str] = {}
 
     def _credentials(self) -> tuple[str, str, str, str]:
-        """Read credentials from env vars. Called lazily on first network use."""
         return (
             os.environ["SP_TENANT_ID"],
             os.environ["SP_CLIENT_ID"],
@@ -98,7 +96,7 @@ class SharePointClient:
             raise ValueError(f"SharePoint list '{display_name}' not found")
         return self._list_id_cache[display_name]
 
-    # ── List operations ─────────────────────────────────────────────────────
+    # ── List operations ───────────────────────────────────────────────────
 
     def get_item(self, item_id: str, list_display_name: Optional[str] = None) -> dict:
         site_id = self._get_site_id()
@@ -137,9 +135,10 @@ class SharePointClient:
         site_id = self._get_site_id()
         list_id = self._get_list_id(config.display_name)
         status_col = config.status_col.replace(" ", "_x0020_")
+        pending_val = config.pending_status_value
         url = (
             f"{self.GRAPH_BASE}/sites/{site_id}/lists/{list_id}/items"
-            f"?expand=fields&$filter=fields/{status_col} eq 'Pending'"
+            f"?expand=fields&$filter=fields/{status_col} eq '{pending_val}'"
         )
         r = requests.get(url, headers=self._headers(), timeout=30)
         r.raise_for_status()
@@ -152,11 +151,21 @@ class SharePointClient:
             results.append(f)
         return results
 
-    # ── Approval state helpers ───────────────────────────────────────────
+    # ── Approval state helpers ────────────────────────────────────────────
+    #
+    # All status values are read from the ListConfig so lists that use
+    # "Declined" instead of "Rejected" etc. write the correct value.
 
     def record_approval_decision(
-        self, item_id: str, step: int, approver_name: str, approver_email: str,
-        decision: str, comments: str = "", list_display_name: Optional[str] = None,
+        self,
+        item_id: str,
+        step: int,
+        approver_name: str,
+        approver_email: str,
+        decision: str,          # "approve" | "reject"
+        comments: str = "",
+        list_display_name: Optional[str] = None,
+        config: Optional["ListConfig"] = None,
     ) -> None:
         now = datetime.now(timezone.utc).isoformat()
         fields: dict[str, Any] = {
@@ -167,19 +176,68 @@ class SharePointClient:
         }
         if comments:
             fields[f"ApproverStep{step}Comments"] = comments
-        if decision == "rejected":
-            fields["Status"]       = "Rejected"
+        if decision == "reject":
+            rejected_val = config.rejected_status_value if config else "Rejected"
+            status_col   = config.status_col if config else "Approval Status"
+            fields[status_col]   = rejected_val
             fields["RejectedBy"]   = approver_name
             fields["RejectedDate"] = now
         self.update_item(item_id, fields, list_display_name)
 
-    def advance_to_next_step(self, item_id: str, next_step: int, list_display_name: Optional[str] = None) -> None:
-        self.update_item(item_id, {"CurrentApprovalStep": next_step, "Status": "In Progress"}, list_display_name)
+    def advance_to_next_step(
+        self,
+        item_id: str,
+        next_step: int,
+        list_display_name: Optional[str] = None,
+        config: Optional["ListConfig"] = None,
+    ) -> None:
+        in_progress_val = config.in_progress_status_value if config else "In Progress"
+        status_col      = config.status_col if config else "Approval Status"
+        self.update_item(item_id, {
+            "CurrentApprovalStep": next_step,
+            status_col: in_progress_val,
+        }, list_display_name)
 
-    def mark_fully_approved(self, item_id: str, list_display_name: Optional[str] = None) -> None:
-        now = datetime.now(timezone.utc).isoformat()
-        self.update_item(item_id, {"Status": "Approved", "FullyApprovedDate": now}, list_display_name)
+    def mark_fully_approved(
+        self,
+        item_id: str,
+        list_display_name: Optional[str] = None,
+        config: Optional["ListConfig"] = None,
+    ) -> None:
+        now          = datetime.now(timezone.utc).isoformat()
+        approved_val = config.approved_status_value if config else "Approved"
+        status_col   = config.status_col if config else "Approval Status"
+        self.update_item(item_id, {
+            status_col:          approved_val,
+            "FullyApprovedDate": now,
+        }, list_display_name)
 
-    def mark_rejected(self, item_id: str, rejected_by: str, list_display_name: Optional[str] = None) -> None:
-        now = datetime.now(timezone.utc).isoformat()
-        self.update_item(item_id, {"Status": "Rejected", "RejectedBy": rejected_by, "RejectedDate": now}, list_display_name)
+    def mark_rejected(
+        self,
+        item_id: str,
+        rejected_by: str,
+        list_display_name: Optional[str] = None,
+        config: Optional["ListConfig"] = None,
+    ) -> None:
+        now          = datetime.now(timezone.utc).isoformat()
+        rejected_val = config.rejected_status_value if config else "Rejected"
+        status_col   = config.status_col if config else "Approval Status"
+        self.update_item(item_id, {
+            status_col:    rejected_val,
+            "RejectedBy":   rejected_by,
+            "RejectedDate": now,
+        }, list_display_name)
+
+    def mark_error(
+        self,
+        item_id: str,
+        message: str,
+        list_display_name: Optional[str] = None,
+        config: Optional["ListConfig"] = None,
+    ) -> None:
+        error_val  = config.error_status_value if config else "Error"
+        status_col = config.status_col if config else "Approval Status"
+        self.update_item(item_id, {
+            status_col:     error_val,
+            "ErrorMessage": message,
+        }, list_display_name)
