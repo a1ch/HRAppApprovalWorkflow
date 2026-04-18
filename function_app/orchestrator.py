@@ -22,9 +22,10 @@ from email_templates import (
 from entra_client import EntraClient
 from hr_records_uploader import HRRecordsUploader
 from hr_roles_client import HRRolesClient
-from list_configs import LIST_CONFIGS
+from list_configs import LIST_CONFIGS, ListConfig
 from mail_sender import GraphMailSender
 from pdf_generator import build_pdf_filename, generate_approval_pdf
+from person_field import extract_person_email, extract_person_name
 from sharepoint_client import SharePointClient
 
 logger = logging.getLogger(__name__)
@@ -32,20 +33,6 @@ logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Role resolution
-#
-# Roles fall into three buckets:
-#
-#   Entra chain  -- resolved by walking the employee's manager chain in Entra ID.
-#                   No columns needed on the request form.
-#     "Direct Manager"    -> chain level 0
-#     "2nd Level Manager" -> chain level 1
-#
-#   HR Roles list -- org-wide static roles maintained by HR in SharePoint.
-#     "HR Manager", "Payroll Manager", "Benefits Specialist", "HR Generalist"
-#
-#   Form fields  -- still read from the request item for roles that may not
-#                   follow the standard Entra hierarchy (GM/Director, Executive, CEO).
-#                   These fall back to the HR Roles list if the field is blank.
 # ---------------------------------------------------------------------------
 
 ENTRA_CHAIN_ROLES: dict[str, int] = {
@@ -54,10 +41,9 @@ ENTRA_CHAIN_ROLES: dict[str, int] = {
 }
 
 FORM_FIELD_ROLES: dict[str, tuple[str, str]] = {
-    # role name -> (name field on SP item, email field on SP item)
-    "GM/Director": ("GMDirectorName",  "GMDirectorEmail"),
-    "Executive":   ("ExecutiveName",   "ExecutiveEmail"),
-    "CEO":         ("CEOName",         "CEOEmail"),
+    "GM/Director":    ("GMDirectorName",    "GMDirectorEmail"),
+    "Executive":      ("ExecutiveName",     "ExecutiveEmail"),
+    "CEO":            ("CEOName",           "CEOEmail"),
     "Hiring Manager": ("HiringManagerName", "HiringManagerEmail"),
 }
 
@@ -93,14 +79,18 @@ def resolve_role(
     # 2. Form fields
     if role in FORM_FIELD_ROLES:
         name_field, email_field = FORM_FIELD_ROLES[role]
+        # Try as plain text field first
         name  = request_fields.get(name_field, "").strip()
         email = request_fields.get(email_field, "").strip()
+        # Also try as a Person picker field (col name without Name/Email suffix)
+        base_col = name_field.replace("Name", "")
+        if not email:
+            email = extract_person_email(request_fields, base_col)
+        if not name:
+            name = extract_person_name(request_fields, base_col)
         if email:
             return name or role, email
-        # Field blank -- fall through to HR Roles list
-        logger.debug(
-            "Form field empty for role '%s', falling back to HR Roles list", role
-        )
+        logger.debug("Form field empty for role '%s', falling back to HR Roles list", role)
 
     # 3. HR Roles list
     return roles_client.resolve_role(role)
@@ -118,10 +108,6 @@ class ApprovalOrchestrator:
     # ── Entry points ──────────────────────────────────────────────────────
 
     def poll_all_lists(self) -> None:
-        """
-        Timer-driven entry point. Iterates all 6 HR lists and processes
-        any items with Status = 'Pending' (new, not yet started).
-        """
         for list_key, config in LIST_CONFIGS.items():
             try:
                 pending = self.sp.get_pending_items_for_list(list_key, config)
@@ -133,7 +119,8 @@ class ApprovalOrchestrator:
                         continue
                     try:
                         self.handle_new_request(
-                            item_id, list_key=list_key, prefetched_fields=fields
+                            item_id, list_key=list_key,
+                            prefetched_fields=fields, config=config,
                         )
                     except Exception as e:
                         logger.exception(
@@ -147,6 +134,7 @@ class ApprovalOrchestrator:
         item_id: str,
         list_key: str = "",
         prefetched_fields: Optional[dict] = None,
+        config: Optional[ListConfig] = None,
     ) -> None:
         fields       = prefetched_fields or self.sp.get_item(item_id)
         workflow_key = fields.get("WorkflowKey", "")
@@ -166,7 +154,10 @@ class ApprovalOrchestrator:
             "CurrentApprovalStep": 0,
             "WorkflowCategory": workflow.category.value,
         })
-        self._send_approver_email(item_id, fields, workflow, step=0, previous_approvals=[])
+        self._send_approver_email(
+            item_id, fields, workflow, step=0,
+            previous_approvals=[], config=config,
+        )
 
     def handle_approval_action(
         self,
@@ -183,9 +174,12 @@ class ApprovalOrchestrator:
         if not workflow:
             return {"error": "Workflow not found", "request_id": item_id}
 
-        current_step = int(fields.get("CurrentApprovalStep", 0))
-        chain = workflow.approval_chain + (["CEO"] if workflow.requires_ceo else [])
-        employee_email = fields.get("EmployeeEmail", "") or fields.get("InitiatorEmail", "")
+        # Get config for this list so we can read person fields correctly
+        config = LIST_CONFIGS.get(list_key) if list_key else None
+
+        current_step   = int(fields.get("CurrentApprovalStep", 0))
+        chain          = workflow.approval_chain + (["CEO"] if workflow.requires_ceo else [])
+        employee_email = self._get_employee_email(fields, config)
 
         expected_role = chain[current_step]
         expected_name, expected_email = resolve_role(
@@ -215,7 +209,7 @@ class ApprovalOrchestrator:
             comments=comments,
         )
 
-        request_details = self._extract_request_details(fields, workflow)
+        request_details = self._extract_request_details(fields, workflow, config)
 
         if action == "reject":
             self._handle_rejection(
@@ -230,20 +224,35 @@ class ApprovalOrchestrator:
             previous_approvals = self._collect_previous_approvals(fields, current_step + 1)
             self._send_approver_email(
                 item_id, fields, workflow, step=next_step,
-                previous_approvals=previous_approvals,
+                previous_approvals=previous_approvals, config=config,
             )
             return {"outcome": "advanced", "request_id": item_id, "next_step": next_step}
         else:
-            self._handle_full_approval(item_id, fields, workflow, request_details)
+            self._handle_full_approval(item_id, fields, workflow, request_details, config)
             return {"outcome": "fully_approved", "request_id": item_id}
 
     # ── Internal helpers ──────────────────────────────────────────────────
 
-    def _get_employee_email(self, fields: dict) -> str:
-        """Best-effort extraction of the employee's email from the request fields."""
+    def _get_employee_email(
+        self, fields: dict, config: Optional[ListConfig] = None
+    ) -> str:
+        """
+        Extract the employee's email from the request fields.
+
+        Priority:
+          1. Person picker column from list config (extract_person_email)
+          2. Flat EmployeeEmail field
+          3. InitiatorEmail as last resort
+        """
+        # 1. Person picker column
+        if config and config.employee_col:
+            email = extract_person_email(fields, config.employee_col)
+            if email:
+                return email
+
+        # 2. Flat fields
         return (
             fields.get("EmployeeEmail", "")
-            or fields.get("EmployeeLookupId", "")  # Graph person column
             or fields.get("InitiatorEmail", "")
             or ""
         ).strip()
@@ -255,14 +264,15 @@ class ApprovalOrchestrator:
         workflow: ApprovalWorkflow,
         step: int,
         previous_approvals: list[dict],
+        config: Optional[ListConfig] = None,
     ) -> None:
         chain = workflow.approval_chain + (["CEO"] if workflow.requires_ceo else [])
         role  = chain[step]
-        employee_email = self._get_employee_email(fields)
+        employee_email = self._get_employee_email(fields, config)
         name, email = resolve_role(
             role, fields, employee_email, self.entra, self.roles_client
         )
-        request_details = self._extract_request_details(fields, workflow)
+        request_details = self._extract_request_details(fields, workflow, config)
 
         msg = build_approver_email(
             base_url=self.base_url,
@@ -308,6 +318,7 @@ class ApprovalOrchestrator:
         fields: dict,
         workflow: ApprovalWorkflow,
         request_details: dict,
+        config: Optional[ListConfig] = None,
     ) -> None:
         self.sp.mark_fully_approved(item_id)
         updated             = self.sp.get_item(item_id)
@@ -344,10 +355,9 @@ class ApprovalOrchestrator:
 
         # Notify roles
         notify_messages: list = []
-        employee_email = self._get_employee_email(fields)
+        employee_email = self._get_employee_email(fields, config)
         for role in workflow.notify_roles:
             try:
-                # Try Entra chain first for manager-type notify roles
                 if role in ENTRA_CHAIN_ROLES and employee_email:
                     level = ENTRA_CHAIN_ROLES[role]
                     name, email = self.entra.resolve_manager_role(employee_email, level=level)
@@ -390,11 +400,27 @@ class ApprovalOrchestrator:
             item_id, pdf_url or "upload failed", workflow.notify_roles,
         )
 
-    def _extract_request_details(self, fields: dict, workflow: ApprovalWorkflow) -> dict:
+    def _extract_request_details(
+        self,
+        fields: dict,
+        workflow: ApprovalWorkflow,
+        config: Optional[ListConfig] = None,
+    ) -> dict:
+        # Get employee name from Person picker if available, else plain text field
+        employee_name = ""
+        if config and config.employee_col:
+            employee_name = extract_person_name(fields, config.employee_col)
+        if not employee_name and config:
+            employee_name = fields.get(config.employee_name_col, "")
+        if not employee_name:
+            employee_name = fields.get("EmployeeName", "")
+
+        employee_email = self._get_employee_email(fields, config)
+
         return {
             "request_type":    workflow.request_type,
-            "employee_name":   fields.get("EmployeeName", ""),
-            "employee_email":  fields.get("EmployeeEmail", ""),
+            "employee_name":   employee_name,
+            "employee_email":  employee_email,
             "employee_number": fields.get("EmployeeNumber", ""),
             "initiator_name":  fields.get("InitiatorName", ""),
             "submitted_date":  fields.get("Created", ""),
