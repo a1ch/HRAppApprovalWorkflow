@@ -11,7 +11,7 @@ List columns expected:
              Valid choices must match VALID_ROLES exactly.
   Person   — Person picker column (email extracted automatically from Entra)
   Active   — Yes/No column (only Active=Yes rows are returned)
-  Company  — Choice: "Stream-Flo USA LLC" | "Master Flo Valve USA Inc." | "Dycor" | "All"
+  Company  — Choice column, valid values defined in VALID_COMPANIES below.
 
 The Role column name defaults to "Role" and is controlled by the
 HR_ROLES_ROLE_COL app setting if your list uses a different name.
@@ -41,9 +41,7 @@ logger = logging.getLogger(__name__)
 
 CACHE_TTL_SECONDS = 300   # 5 minutes
 
-# These are the exact choice values that must be configured in the
-# SharePoint "Role" Choice column on the HR Approval Roles list.
-# Any row whose Role is not in this set will be skipped with a warning.
+# Exact choice values for the Role column on the HR Approval Roles list.
 VALID_ROLES: frozenset[str] = frozenset({
     "HR Manager",
     "Payroll Manager",
@@ -53,6 +51,19 @@ VALID_ROLES: frozenset[str] = frozenset({
     "Executive",
     "CEO",
     "Hiring Manager",
+})
+
+# Exact choice values for the Company column on the HR Approval Roles list.
+VALID_COMPANIES: frozenset[str] = frozenset({
+    "Master Flo Valve Inc",
+    "Master Flo Valve USA",
+    "Master Flo Valve UK",
+    "Stream-Flo Industries Ltd",
+    "Stream-Flo USA LLC",
+    "Stream-Flo Group of Companies",
+    "Stream-Flo Saudi Arabia",
+    "Dycor",
+    "All",
 })
 
 
@@ -116,6 +127,15 @@ class HRRolesClient:
                 )
                 continue
 
+            # Warn on unknown company values but don't skip — still usable
+            company = (fields.get("Company") or "").strip()
+            if company and company not in VALID_COMPANIES:
+                logger.warning(
+                    "HR Approval Roles: unknown company '%s' for role '%s'. "
+                    "Valid companies are: %s",
+                    company, role, sorted(VALID_COMPANIES),
+                )
+
             # 1. Try Person picker column
             name, email = extract_person(fields, self._person_col)
 
@@ -133,7 +153,11 @@ class HRRolesClient:
                 )
                 continue
 
-            cache.setdefault(role, []).append({"name": name or role, "email": email})
+            cache.setdefault(role, []).append({
+                "name":    name or role,
+                "email":   email,
+                "company": company,
+            })
 
         self._cache = cache
         self._cache_time = time.monotonic()
@@ -161,7 +185,7 @@ class HRRolesClient:
 
     def get_role_entries(self, role: str) -> list[dict]:
         """
-        Returns all active entries for a role as a list of {name, email} dicts.
+        Returns all active entries for a role as a list of {name, email, company} dicts.
         Returns [] if the role is not found.
         Raises on network/auth error.
         """
