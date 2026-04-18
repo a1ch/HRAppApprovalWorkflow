@@ -4,19 +4,15 @@ Maps exact SharePoint column names to the approval chain roles.
 
 Site: https://streamflogroup.sharepoint.com/hrcp/hrst
 
-Person column notes:
-  When Graph API returns a Person/People Picker field it expands to a sub-object.
-  The internal column name for a Person field called "Employee" will appear in
-  the fields dict as both:
-    - "EmployeeLookupId"   -> SharePoint user ID (integer as string)
-    - "Employee"           -> { "LookupId": 42, "LookupValue": "John Smith" }
-  AND if the list has been configured with profile expansion:
-    - "EmployeeEmail"      -> direct email string
-  We use extract_person_email() in sharepoint_client.py to handle all variants.
+Column names are verified against the actual SharePoint lists via the
+/api/debug-lists endpoint. Last verified: 2026-04-18, all lists OK.
 
-  employee_col     = the Person picker column display name (e.g. "Employee").
-                     Set to None for lists where the employee is text-only.
-  employee_name_col = plain text fallback / display name column.
+Status column values:
+  Most lists use: Pending, In Progress, Approved, Rejected, Error
+  Offer Letters uses: Pending, In Progress, Approved, Declined, Error
+  Workforce Requisition uses: Pending, Approved, Declined (no In Progress)
+  The rejected_status_value field handles the Rejected vs Declined difference.
+  The in_progress_status_value field handles lists that don't have In Progress.
 """
 
 from dataclasses import dataclass, field
@@ -34,8 +30,8 @@ class ListConfig:
     employee_col: Optional[str] = None  # Person picker column name (preferred for email)
 
     # Initiator
-    initiator_col: str = ""       # who submitted the request
-    initiator_is_person: bool = False  # True = Person col, False = text col
+    initiator_col: str = ""
+    initiator_is_person: bool = False
 
     # Approval chain person columns — None if not on this list
     direct_manager_col: Optional[str]       = None
@@ -50,14 +46,21 @@ class ListConfig:
     hr_generalist_col: Optional[str]        = None
 
     # Notify-only columns
-    notify_cols: dict[str, str]             = field(default_factory=dict)
+    notify_cols: dict[str, str] = field(default_factory=dict)
 
-    # Key metadata columns for PDF / email
-    request_type_col: Optional[str]        = None
-    effective_date_col: Optional[str]       = None
-    notes_col: Optional[str]               = None
-    status_col: str                         = "Approval Status"
-    url_col: Optional[str]                  = None
+    # Metadata columns for PDF / email
+    request_type_col: Optional[str]  = None
+    effective_date_col: Optional[str] = None
+    notes_col: Optional[str]         = None
+    url_col: Optional[str]           = None
+
+    # Status column — name and values (vary per list)
+    status_col: str                   = "Approval Status"
+    pending_status_value: str         = "Pending"
+    in_progress_status_value: str     = "In Progress"
+    approved_status_value: str        = "Approved"
+    rejected_status_value: str        = "Rejected"   # some lists use "Declined"
+    error_status_value: str           = "Error"
 
 
 LIST_CONFIGS: dict[str, ListConfig] = {
@@ -67,7 +70,7 @@ LIST_CONFIGS: dict[str, ListConfig] = {
         list_path="Lists/Leave%20of%20Absence",
         workflow_keys=["loa_personal", "loa_fmla", "loa_military"],
         employee_name_col="Employee Name",
-        employee_col=None,              # text field — no person picker for employee
+        employee_col="Employee Name",       # Person picker confirmed
         initiator_col="Requested By",
         initiator_is_person=False,
         direct_manager_col="Direct Manager",
@@ -88,7 +91,7 @@ LIST_CONFIGS: dict[str, ListConfig] = {
         list_path="Lists/Employee%20Offer%20Letters",
         workflow_keys=["offer_backfill_budgeted", "offer_backfill_unbudgeted", "offer_new_budgeted", "offer_new_unbudgeted"],
         employee_name_col="Applicant Name",
-        employee_col=None,              # applicant is external candidate, no Entra account
+        employee_col=None,                  # external candidate, no Entra account
         initiator_col="Hiring Supervisor",
         initiator_is_person=True,
         hiring_manager_col="Hiring Supervisor",
@@ -101,8 +104,8 @@ LIST_CONFIGS: dict[str, ListConfig] = {
         notify_cols={"Benefits Specialist": "Benefits Specialist", "Payroll Manager": "Payroll Manager"},
         request_type_col="Request Type",
         effective_date_col="Start Date",
-        notes_col=None,
         status_col="Approval Status",
+        rejected_status_value="Declined",   # this list uses Declined not Rejected
         url_col="EOL URL",
     ),
 
@@ -116,7 +119,7 @@ LIST_CONFIGS: dict[str, ListConfig] = {
             "pcn_rotation_with_pay", "pcn_rotation_no_pay",
         ],
         employee_name_col="Employee Name",
-        employee_col="Employee Name",   # Person picker — update to exact SP internal name if different
+        employee_col="Employee Name",       # Person picker confirmed
         initiator_col="Requested By",
         initiator_is_person=True,
         direct_manager_col="Current Supervisor",
@@ -132,7 +135,8 @@ LIST_CONFIGS: dict[str, ListConfig] = {
         request_type_col="Change Type",
         effective_date_col="Effective Date Of Change",
         notes_col="Comments",
-        status_col="Approval status",
+        status_col="Approval status",       # lowercase 's' — exact SP column name
+        rejected_status_value="Declined",   # this list uses Declined not Rejected
         url_col="PCN URL",
     ),
 
@@ -141,7 +145,7 @@ LIST_CONFIGS: dict[str, ListConfig] = {
         list_path="Lists/Termination%20Form",
         workflow_keys=["pcn_termination_discharge", "pcn_termination_resignation", "pcn_termination_retirement"],
         employee_name_col="Employee Name",
-        employee_col="Employee Name",   # Person picker — update to exact SP internal name if different
+        employee_col="Employee Name",       # Person picker confirmed
         initiator_col="Current Supervisor",
         initiator_is_person=True,
         direct_manager_col="Current Supervisor",
@@ -151,7 +155,7 @@ LIST_CONFIGS: dict[str, ListConfig] = {
         benefits_specialist_col="Benefits Specialist",
         notify_cols={"Benefits Specialist": "Benefits Specialist", "Payroll Manager": "Payroll Manager"},
         request_type_col="Termination Type",
-        effective_date_col="Effective Date of Change",
+        effective_date_col="Effective Date of Change",  # lowercase 'o' — exact SP column name
         notes_col="Additional Notes",
         status_col="Approval Status",
         url_col="TF URL",
@@ -166,7 +170,7 @@ LIST_CONFIGS: dict[str, ListConfig] = {
             "job_req_temp_budgeted", "job_req_temp_unbudgeted",
         ],
         employee_name_col="Replaced Employee",
-        employee_col="Replaced Employee",  # Person picker if it's an existing employee
+        employee_col=None,                  # plain text confirmed, not a person picker
         initiator_col="Requested By",
         initiator_is_person=True,
         hiring_manager_col="Hiring Supervisor",
@@ -180,6 +184,8 @@ LIST_CONFIGS: dict[str, ListConfig] = {
         effective_date_col="Requested Date",
         notes_col="Screening Criteria",
         status_col="Approval Status Value",
+        rejected_status_value="Declined",   # this list uses Declined not Rejected
+        in_progress_status_value="Pending", # no In Progress choice — stay as Pending
     ),
 
     "promotion": ListConfig(
@@ -187,7 +193,7 @@ LIST_CONFIGS: dict[str, ListConfig] = {
         list_path="Lists/Promotion%20Title%20Change%20With%20Pay",
         workflow_keys=["promo_salaried", "promo_hourly", "promo_salaried_rate", "promo_hourly_rate"],
         employee_name_col="Employee",
-        employee_col="Employee",        # Person picker
+        employee_col="Employee",            # Person picker confirmed
         initiator_col="Created By",
         initiator_is_person=True,
         second_level_manager_col="2nd Level Manager",
@@ -198,8 +204,6 @@ LIST_CONFIGS: dict[str, ListConfig] = {
         payroll_manager_col="Payroll Manager",
         notify_cols={"Payroll Manager": "Payroll Manager"},
         request_type_col="Change Type",
-        effective_date_col=None,
-        notes_col=None,
         status_col="Approval Status",
     ),
 }
