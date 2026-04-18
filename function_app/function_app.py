@@ -12,6 +12,7 @@ Functions:
 import json
 import logging
 from urllib.parse import urlencode
+from typing import Optional
 
 import azure.functions as func
 
@@ -20,7 +21,15 @@ from rejection_form import build_rejection_form, build_rejection_confirmed_page
 
 logger = logging.getLogger(__name__)
 app = func.FunctionApp(http_auth_level=func.AuthLevel.FUNCTION)
-orchestrator = ApprovalOrchestrator()
+
+# Lazy-loaded — not instantiated until first use so env vars are available
+_orchestrator: Optional[ApprovalOrchestrator] = None
+
+def get_orchestrator() -> ApprovalOrchestrator:
+    global _orchestrator
+    if _orchestrator is None:
+        _orchestrator = ApprovalOrchestrator()
+    return _orchestrator
 
 
 # ── 1. Timer trigger — polls all lists every 5 minutes ───────────────────
@@ -30,12 +39,12 @@ orchestrator = ApprovalOrchestrator()
 def poll_new_requests(timer: func.TimerRequest) -> None:
     logger.info("PollNewRequests timer fired")
     try:
-        orchestrator.poll_all_lists()
+        get_orchestrator().poll_all_lists()
     except Exception as e:
         logger.exception("Error during list poll: %s", e)
 
 
-# ── 2. Approval action — Approve only ─────────────────────────────────────
+# ── 2. Approval action ────────────────────────────────────────────────────
 
 @app.function_name("ApprovalAction")
 @app.route(route="approval-action", methods=["GET", "POST"])
@@ -70,7 +79,7 @@ def approval_action(req: func.HttpRequest) -> func.HttpResponse:
         )
 
     try:
-        result = orchestrator.handle_approval_action(
+        result = get_orchestrator().handle_approval_action(
             item_id=request_id,
             approver_email=approver_email,
             action="approve",
@@ -132,7 +141,7 @@ def rejection_form_get(req: func.HttpRequest) -> func.HttpResponse:
         from list_configs import LIST_CONFIGS
         config = LIST_CONFIGS.get(list_key)
         if config:
-            fields = orchestrator.sp.get_item(request_id)
+            fields = get_orchestrator().sp.get_item(request_id)
             employee_name = fields.get(config.employee_name_col, "")
             request_type  = fields.get(config.request_type_col, "") if config.request_type_col else ""
     except Exception as e:
@@ -172,7 +181,7 @@ def rejection_form_post(req: func.HttpRequest) -> func.HttpResponse:
         )
 
     try:
-        result = orchestrator.handle_approval_action(
+        result = get_orchestrator().handle_approval_action(
             item_id=request_id,
             approver_email=approver_email,
             action="reject",
