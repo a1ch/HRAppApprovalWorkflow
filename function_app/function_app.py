@@ -7,6 +7,7 @@ Functions:
   3. RejectionFormGet   — approver clicks Reject — shows a form to enter reason
   4. RejectionFormPost  — processes the rejection form submission
   5. HealthCheck        — simple GET for monitoring
+  6. DebugRoles         — temp: reads HR Approval Roles list and returns what was found
 """
 
 import json
@@ -217,6 +218,37 @@ def health_check(req: func.HttpRequest) -> func.HttpResponse:
         json.dumps({"status": "ok", "service": "hr-approval-func"}),
         mimetype="application/json",
     )
+
+
+# ── 6. Debug — reads HR Approval Roles list and returns what was found ────
+# TODO: remove this endpoint before going live
+
+@app.function_name("DebugRoles")
+@app.route(route="debug-roles", methods=["GET"])
+def debug_roles(req: func.HttpRequest) -> func.HttpResponse:
+    try:
+        orch = get_orchestrator()
+        orch.roles_client.invalidate_cache()
+        orch.roles_client._load_cache()
+        cache = orch.roles_client._cache
+        return func.HttpResponse(
+            json.dumps({
+                "status": "ok",
+                "roles_found": sorted(cache.keys()),
+                "total_entries": sum(len(v) for v in cache.values()),
+                "detail": {
+                    role: [{"name": e["name"], "email": e["email"], "company": e.get("company", "")} for e in entries]
+                    for role, entries in sorted(cache.items())
+                },
+            }, indent=2),
+            mimetype="application/json",
+        )
+    except Exception as e:
+        return func.HttpResponse(
+            json.dumps({"status": "error", "message": str(e)}),
+            status_code=500,
+            mimetype="application/json",
+        )
 
 
 # ── HTML response helper ──────────────────────────────────────────────────
