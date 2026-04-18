@@ -1,18 +1,24 @@
 """
 SharePoint list configurations for all 6 HR approval lists.
-Maps exact SharePoint column names to the approval chain roles.
 
 Site: https://streamflogroup.sharepoint.com/hrcp/hrst
 
-Column names are verified against the actual SharePoint lists via the
-/api/debug-lists endpoint. Last verified: 2026-04-18, all lists OK.
+Design principle: lists only store what the USER fills in on the form.
+All approval chain roles (HR Manager, 2nd Level Manager, GM/Director etc.)
+are resolved at runtime from Entra ID (manager chain) or the HR Approval
+Roles list. No approval chain Person picker columns needed on the lists.
 
-Status column values:
-  Most lists use: Pending, In Progress, Approved, Rejected, Error
-  Offer Letters uses: Pending, In Progress, Approved, Declined, Error
-  Workforce Requisition uses: Pending, Approved, Declined (no In Progress)
-  The rejected_status_value field handles the Rejected vs Declined difference.
-  The in_progress_status_value field handles lists that don't have In Progress.
+This keeps each list well under SharePoint's 12 lookup column limit.
+
+Column names verified against actual SharePoint lists via /api/debug-lists.
+Last verified: 2026-04-18, all lists OK.
+
+Status column values vary per list:
+  Most lists:           Pending, In Progress, Approved, Rejected, Error
+  Offer Letters:        Pending, In Progress, Approved, Declined, Error
+  Payroll Change:       Pending, In Progress, Approved, Declined, Error
+  Workforce Req:        Pending, Approved, Declined  (no In Progress choice)
+  rejected_status_value and in_progress_status_value handle the differences.
 """
 
 from dataclasses import dataclass, field
@@ -23,44 +29,32 @@ from typing import Optional
 class ListConfig:
     display_name: str           # SharePoint list display name
     list_path: str              # URL path segment e.g. Lists/Leave%20of%20Absence
-    workflow_keys: list[str]    # which workflows from approval_matrix.py this list covers
+    workflow_keys: list[str]    # workflows from approval_matrix.py this list covers
 
-    # Employee columns
-    employee_name_col: str      # text / display name column for employee
-    employee_col: Optional[str] = None  # Person picker column name (preferred for email)
+    # ─ Employee ──────────────────────────────────────────────────
+    # employee_col  = Person picker column (used to get email for Entra lookup)
+    # employee_name_col = plain text display name fallback
+    employee_name_col: str
+    employee_col: Optional[str] = None
 
-    # Initiator
+    # ─ Initiator ───────────────────────────────────────────────
+    # Person picker column for who submitted the form (used for InitiatorEmail)
     initiator_col: str = ""
     initiator_is_person: bool = False
 
-    # Approval chain person columns — None if not on this list
-    direct_manager_col: Optional[str]       = None
-    second_level_manager_col: Optional[str] = None
-    hr_manager_col: Optional[str]           = None
-    gm_director_col: Optional[str]          = None
-    executive_col: Optional[str]            = None
-    ceo_col: Optional[str]                  = None
-    hiring_manager_col: Optional[str]       = None
-    payroll_manager_col: Optional[str]      = None
-    benefits_specialist_col: Optional[str]  = None
-    hr_generalist_col: Optional[str]        = None
-
-    # Notify-only columns
-    notify_cols: dict[str, str] = field(default_factory=dict)
-
-    # Metadata columns for PDF / email
-    request_type_col: Optional[str]  = None
+    # ─ Metadata ───────────────────────────────────────────────
+    request_type_col: Optional[str]   = None
     effective_date_col: Optional[str] = None
-    notes_col: Optional[str]         = None
-    url_col: Optional[str]           = None
+    notes_col: Optional[str]          = None
+    url_col: Optional[str]            = None
 
-    # Status column — name and values (vary per list)
-    status_col: str                   = "Approval Status"
-    pending_status_value: str         = "Pending"
-    in_progress_status_value: str     = "In Progress"
-    approved_status_value: str        = "Approved"
-    rejected_status_value: str        = "Rejected"   # some lists use "Declined"
-    error_status_value: str           = "Error"
+    # ─ Status column ──────────────────────────────────────────
+    status_col: str               = "Approval Status"
+    pending_status_value: str     = "Pending"
+    in_progress_status_value: str = "In Progress"
+    approved_status_value: str    = "Approved"
+    rejected_status_value: str    = "Rejected"
+    error_status_value: str       = "Error"
 
 
 LIST_CONFIGS: dict[str, ListConfig] = {
@@ -70,16 +64,9 @@ LIST_CONFIGS: dict[str, ListConfig] = {
         list_path="Lists/Leave%20of%20Absence",
         workflow_keys=["loa_personal", "loa_fmla", "loa_military"],
         employee_name_col="Employee Name",
-        employee_col="Employee Name",       # Person picker confirmed
+        employee_col="Employee Name",       # Person picker — email used for Entra lookup
         initiator_col="Requested By",
-        initiator_is_person=False,
-        direct_manager_col="Direct Manager",
-        second_level_manager_col="2nd Level Manager",
-        hr_manager_col="HR Manager",
-        gm_director_col="GM Director",
-        payroll_manager_col="Payroll Manager",
-        benefits_specialist_col="Benefits Specialist",
-        notify_cols={"Benefits Specialist": "Benefits Specialist", "Payroll Manager": "Payroll Manager"},
+        initiator_is_person=False,          # plain text on this list
         request_type_col="Absence Type",
         effective_date_col="Start Date",
         notes_col="Notes",
@@ -89,23 +76,18 @@ LIST_CONFIGS: dict[str, ListConfig] = {
     "offer_letters": ListConfig(
         display_name="Offer Letters Request Form",
         list_path="Lists/Employee%20Offer%20Letters",
-        workflow_keys=["offer_backfill_budgeted", "offer_backfill_unbudgeted", "offer_new_budgeted", "offer_new_unbudgeted"],
+        workflow_keys=[
+            "offer_backfill_budgeted", "offer_backfill_unbudgeted",
+            "offer_new_budgeted", "offer_new_unbudgeted",
+        ],
         employee_name_col="Applicant Name",
-        employee_col=None,                  # external candidate, no Entra account
+        employee_col=None,                  # external candidate — no Entra account
         initiator_col="Hiring Supervisor",
         initiator_is_person=True,
-        hiring_manager_col="Hiring Supervisor",
-        second_level_manager_col="Manager's Manager",
-        hr_manager_col="HR Manager",
-        gm_director_col="GM Director",
-        executive_col="Executive",
-        benefits_specialist_col="Benefits Specialist",
-        payroll_manager_col="Payroll Manager",
-        notify_cols={"Benefits Specialist": "Benefits Specialist", "Payroll Manager": "Payroll Manager"},
         request_type_col="Request Type",
         effective_date_col="Start Date",
         status_col="Approval Status",
-        rejected_status_value="Declined",   # this list uses Declined not Rejected
+        rejected_status_value="Declined",
         url_col="EOL URL",
     ),
 
@@ -119,43 +101,31 @@ LIST_CONFIGS: dict[str, ListConfig] = {
             "pcn_rotation_with_pay", "pcn_rotation_no_pay",
         ],
         employee_name_col="Employee Name",
-        employee_col="Employee Name",       # Person picker confirmed
+        employee_col="Employee Name",       # Person picker — email used for Entra lookup
         initiator_col="Requested By",
         initiator_is_person=True,
-        direct_manager_col="Current Supervisor",
-        second_level_manager_col="2nd Level Manager",
-        hr_manager_col="HR Manager",
-        gm_director_col="GM Director",
-        executive_col="Executive",
-        ceo_col="CEO",
-        payroll_manager_col="Payroll Manager",
-        benefits_specialist_col="Benefits Specialist",
-        hr_generalist_col="HR Generalist",
-        notify_cols={"Payroll Manager": "Payroll Manager", "Benefits Specialist": "Benefits Specialist", "HR Generalist": "HR Generalist"},
         request_type_col="Change Type",
         effective_date_col="Effective Date Of Change",
         notes_col="Comments",
         status_col="Approval status",       # lowercase 's' — exact SP column name
-        rejected_status_value="Declined",   # this list uses Declined not Rejected
+        rejected_status_value="Declined",
         url_col="PCN URL",
     ),
 
     "termination": ListConfig(
         display_name="Termination Form",
         list_path="Lists/Termination%20Form",
-        workflow_keys=["pcn_termination_discharge", "pcn_termination_resignation", "pcn_termination_retirement"],
+        workflow_keys=[
+            "pcn_termination_discharge",
+            "pcn_termination_resignation",
+            "pcn_termination_retirement",
+        ],
         employee_name_col="Employee Name",
-        employee_col="Employee Name",       # Person picker confirmed
+        employee_col="Employee Name",       # Person picker — email used for Entra lookup
         initiator_col="Current Supervisor",
         initiator_is_person=True,
-        direct_manager_col="Current Supervisor",
-        second_level_manager_col="2nd Level Manager",
-        hr_manager_col="HR Manager",
-        payroll_manager_col="Payroll Manager",
-        benefits_specialist_col="Benefits Specialist",
-        notify_cols={"Benefits Specialist": "Benefits Specialist", "Payroll Manager": "Payroll Manager"},
         request_type_col="Termination Type",
-        effective_date_col="Effective Date of Change",  # lowercase 'o' — exact SP column name
+        effective_date_col="Effective Date of Change",  # lowercase 'o'
         notes_col="Additional Notes",
         status_col="Approval Status",
         url_col="TF URL",
@@ -170,39 +140,28 @@ LIST_CONFIGS: dict[str, ListConfig] = {
             "job_req_temp_budgeted", "job_req_temp_unbudgeted",
         ],
         employee_name_col="Replaced Employee",
-        employee_col=None,                  # plain text confirmed, not a person picker
+        employee_col=None,                  # plain text on this list
         initiator_col="Requested By",
         initiator_is_person=True,
-        hiring_manager_col="Hiring Supervisor",
-        second_level_manager_col="Manager's Manager",
-        hr_manager_col="HR Manager",
-        gm_director_col="GM Director",
-        executive_col="Executive",
-        ceo_col="CEO",
-        notify_cols={},
         request_type_col="Request Type",
         effective_date_col="Requested Date",
         notes_col="Screening Criteria",
         status_col="Approval Status Value",
-        rejected_status_value="Declined",   # this list uses Declined not Rejected
-        in_progress_status_value="Pending", # no In Progress choice — stay as Pending
+        rejected_status_value="Declined",
+        in_progress_status_value="Pending", # no In Progress choice on this list
     ),
 
     "promotion": ListConfig(
         display_name="Promotion Title Change With Pay",
         list_path="Lists/Promotion%20Title%20Change%20With%20Pay",
-        workflow_keys=["promo_salaried", "promo_hourly", "promo_salaried_rate", "promo_hourly_rate"],
+        workflow_keys=[
+            "promo_salaried", "promo_hourly",
+            "promo_salaried_rate", "promo_hourly_rate",
+        ],
         employee_name_col="Employee",
-        employee_col="Employee",            # Person picker confirmed
+        employee_col="Employee",            # Person picker — email used for Entra lookup
         initiator_col="Created By",
         initiator_is_person=True,
-        second_level_manager_col="2nd Level Manager",
-        hr_manager_col="HR Manager",
-        gm_director_col="GM Director",
-        executive_col="Executive",
-        ceo_col="CEO",
-        payroll_manager_col="Payroll Manager",
-        notify_cols={"Payroll Manager": "Payroll Manager"},
         request_type_col="Change Type",
         status_col="Approval Status",
     ),
@@ -218,17 +177,3 @@ def get_config_for_workflow(workflow_key: str) -> Optional[tuple[str, ListConfig
         if workflow_key in config.workflow_keys:
             return list_key, config
     return None
-
-
-PERSON_COL_ROLE_MAP = {
-    "Direct Manager":      "direct_manager_col",
-    "2nd Level Manager":   "second_level_manager_col",
-    "Hiring Manager":      "hiring_manager_col",
-    "HR Manager":          "hr_manager_col",
-    "GM/Director":         "gm_director_col",
-    "Executive":           "executive_col",
-    "CEO":                 "ceo_col",
-    "Payroll Manager":     "payroll_manager_col",
-    "Benefits Specialist": "benefits_specialist_col",
-    "HR Generalist":       "hr_generalist_col",
-}
