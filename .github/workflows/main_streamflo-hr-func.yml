@@ -38,7 +38,10 @@ jobs:
         run: pip install -r ${{ env.AZURE_FUNCTIONAPP_PACKAGE_PATH }}/requirements.txt
 
       - name: Zip artifact for deployment
-        run: zip -r release.zip ${{ env.AZURE_FUNCTIONAPP_PACKAGE_PATH }}
+        run: |
+          cd ${{ env.AZURE_FUNCTIONAPP_PACKAGE_PATH }}
+          zip -r ../release.zip .
+          cd ..
 
       - name: Upload artifact for deployment job
         uses: actions/upload-artifact@v4
@@ -61,11 +64,6 @@ jobs:
         with:
           name: python-app
 
-      - name: Unzip artifact for deployment
-        run: |
-          unzip release.zip
-          rm release.zip
-
       - name: Login to Azure
         uses: azure/login@v2
         with:
@@ -79,4 +77,4 @@ jobs:
         with:
           app-name: 'streamflo-hr-func'
           slot-name: 'Production'
-          package: ${{ env.AZURE_FUNCTIONAPP_PACKAGE_PATH }}
+          package: 'release.zip'
