@@ -17,6 +17,7 @@ SharePoint lists. The lists now only store what the user fills in.
 """
 
 import logging
+import re
 import os
 from typing import Optional
 
@@ -45,41 +46,61 @@ ENTRA_CHAIN_ROLES: dict[str, int] = {
 }
 
 
-def resolve_role(
-    role: str,
-    employee_email: str,
-    entra: EntraClient,
-    roles_client: HRRolesClient,
-) -> tuple[str, str]:
+# Every approval role is resolved from the request form's text column that
+# holds "Display Name <email>" (written by the HR Service Center SPFx app).
+ROLE_TEXT_FIELD = {
+    "Direct Manager":      "DirectManagerText",
+    "2nd Level Manager":   "SecondLevelManagerText",
+    "Hiring Manager":      "HiringSupervisorText",
+    "HR Manager":          "HRManagerText",
+    "GM/Director":         "GMDirectorText",
+    "Executive":           "ExecutiveText",
+    "CEO":                 "CEOText",
+    "Payroll Manager":     "PayrollManagerText",
+    "Benefits Specialist": "BenefitsSpecialistText",
+    "HR Generalist":       "HRGeneralistText",
+}
+
+
+def parse_person_text(value) -> tuple[str, str]:
+    """Parse an approver value into (name, email).
+
+    Accepts "Display Name <email>", a bare email, a name only, or a legacy
+    Person dict ({"Title","Email"}).
     """
-    Resolve any approval role to (name, email).
+    if value is None:
+        return "", ""
+    if isinstance(value, dict):
+        return (
+            (value.get("Title") or value.get("name") or "").strip(),
+            (value.get("Email") or value.get("email") or "").strip(),
+        )
+    s = str(value).strip()
+    if not s:
+        return "", ""
+    m = re.search(r"<([^>]+)>", s)
+    if m:
+        email = m.group(1).strip()
+        name = s[: m.start()].strip().strip('"').strip() or email
+        return name, email
+    if "@" in s and " " not in s:
+        return s, s
+    return s, ""
 
-    1. Direct Manager / 2nd Level Manager  →  Entra manager chain
-    2. Everything else                      →  HR Approval Roles list
-    """
-    # 1. Entra manager chain
-    if role in ENTRA_CHAIN_ROLES:
-        level = ENTRA_CHAIN_ROLES[role]
-        if not employee_email:
-            raise ValueError(
-                f"Cannot resolve '{role}' from Entra — no employee email on the request."
-            )
-        try:
-            return entra.resolve_manager_role(employee_email, level=level)
-        except ValueError as e:
-            raise ValueError(
-                f"Entra manager chain lookup failed for '{role}' "
-                f"(employee {employee_email}, level {level}): {e}"
-            ) from e
 
-    # 2. HR Approval Roles list
-    if role in VALID_ROLES:
-        return roles_client.resolve_role(role)
-
-    raise ValueError(
-        f"Unknown role '{role}' — not in Entra chain roles or VALID_ROLES. "
-        f"Check approval_matrix.py."
-    )
+def resolve_role(role: str, fields: dict) -> tuple[str, str]:
+    """Resolve any approval role to (name, email) from the request form itself."""
+    col = ROLE_TEXT_FIELD.get(role)
+    if not col:
+        raise ValueError(
+            f"Role '{role}' has no approver column mapping (ROLE_TEXT_FIELD)."
+        )
+    name, email = parse_person_text(fields.get(col))
+    if not email:
+        raise ValueError(
+            f"Missing approver email for '{role}' on the request (column '{col}')."
+        )
+    return name, email
 
 
 class ApprovalOrchestrator:
@@ -256,7 +277,7 @@ class ApprovalOrchestrator:
         employee_email = self._get_employee_email(fields, config)
 
         try:
-            name, email = resolve_role(role, employee_email, self.entra, self.roles_client)
+            name, email = resolve_role(role, fields)
         except ValueError as e:
             logger.error("Cannot send step %d email — role resolution failed: %s", step, e)
             return
@@ -350,16 +371,8 @@ class ApprovalOrchestrator:
         notify_messages = []
         for role in workflow.notify_roles:
             try:
-                if role in ENTRA_CHAIN_ROLES:
-                    name, email = self.entra.resolve_manager_role(
-                        employee_email, level=ENTRA_CHAIN_ROLES[role]
-                    )
-                    entries = [(name, email)]
-                else:
-                    entries = self.roles_client.get_all_emails_for_role(role)
-                    if not entries:
-                        name, email = resolve_role(role, employee_email, self.entra, self.roles_client)
-                        entries = [(name, email)]
+                name, email = resolve_role(role, fields)
+                entries = [(name, email)] if email else []
                 for name, email in entries:
                     notify_messages.append(build_notify_email(
                         notify_name=name,
@@ -434,3 +447,6 @@ class ApprovalOrchestrator:
                     "comments": fields.get(f"ApproverStep{i}Comments", ""),
                 })
         return result
+
+
+

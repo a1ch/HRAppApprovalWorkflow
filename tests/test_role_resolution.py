@@ -1,8 +1,9 @@
 """
-Tests for resolve_role and _resolve_dynamic_role in orchestrator.py.
+Tests for the form-only resolve_role / parse_person_text.
 
-Static role resolution now goes through HRRolesClient (SharePoint list),
-so those tests use a FakeRolesClient instead of env vars.
+Every approver email now comes from the request form's *Text column
+("Display Name <email>"). There is no Entra chain or HR Approval Roles list
+fallback — the form is the single source of truth.
 
 Run: pytest tests/test_role_resolution.py -v
 """
@@ -22,183 +23,80 @@ _req_exc = types.ModuleType("requests.exceptions")
 _req_exc.HTTPError = type("HTTPError", (Exception,), {})
 sys.modules["requests.exceptions"] = _req_exc
 
-from orchestrator import resolve_role, _resolve_dynamic_role
+from orchestrator import resolve_role, parse_person_text, ROLE_TEXT_FIELD
 
-FULL_FIELDS = {
-    "DirectManagerName":       "Chris Hayslip",
-    "DirectManagerEmail":      "chayslip@streamflo.com",
-    "SecondLevelManagerName":  "Keith Haynes",
-    "SecondLevelManagerEmail": "khaynes@streamflo.com",
-    "HiringManagerName":       "Chris Hayslip",
-    "HiringManagerEmail":      "chayslip@streamflo.com",
-    "GMDirectorName":          "Quanah Gilmore",
-    "GMDirectorEmail":         "qgilmore@streamflo.com",
-    "ExecutiveName":           "Sean Wilcock",
-    "ExecutiveEmail":          "swilcock@streamflo.com",
-    "CEOName":                 "Mark McNeill",
-    "CEOEmail":                "mmcneill@streamflo.com",
-}
-
-STATIC_ROLE_DATA = {
-    "HR Manager":          ("Rae-Lynn Perkins",    "rlperkins@streamflo.com"),
-    "Payroll Manager":     ("Gary Thedford",       "gthedford@streamflo.com"),
-    "Benefits Specialist": ("Sandra Carrisalez",   "scarrisalez@streamflo.com"),
-    "HR Generalist":       ("Tanya Parashar",      "tparashar@streamflo.com"),
+FORM_FIELDS = {
+    "DirectManagerText":      "Chris Hayslip <chayslip@streamflo.com>",
+    "SecondLevelManagerText": "Keith Haynes <khaynes@streamflo.com>",
+    "HiringSupervisorText":   "Chris Hayslip <chayslip@streamflo.com>",
+    "HRManagerText":          "Rae-Lynn Perkins <rlperkins@streamflo.com>",
+    "GMDirectorText":         "Quanah Gilmore <qgilmore@streamflo.com>",
+    "ExecutiveText":          "Sean Wilcock <swilcock@streamflo.com>",
+    "CEOText":                "Mark McNeill <mmcneill@streamflo.com>",
+    "PayrollManagerText":     "Gary Thedford <gthedford@streamflo.com>",
+    "BenefitsSpecialistText": "Sandra Carrisalez <scarrisalez@streamflo.com>",
+    "HRGeneralistText":       "Tanya Parashar <tparashar@streamflo.com>",
 }
 
 
-class FakeRolesClient:
-    def __init__(self, roles=None):
-        self._roles = roles if roles is not None else dict(STATIC_ROLE_DATA)
+class TestParsePersonText:
+    def test_name_and_email(self):
+        assert parse_person_text("Jane Smith <jsmith@streamflo.com>") == ("Jane Smith", "jsmith@streamflo.com")
 
-    def resolve_role(self, role):
-        if role not in self._roles:
-            raise ValueError(f"No active entry for role '{role}' in HR Approval Roles list")
-        return self._roles[role]
+    def test_bare_email(self):
+        assert parse_person_text("jsmith@streamflo.com") == ("jsmith@streamflo.com", "jsmith@streamflo.com")
 
-    def get_all_emails_for_role(self, role):
-        if role not in self._roles:
-            return []
-        return [self._roles[role]]
+    def test_name_only(self):
+        assert parse_person_text("Jane Smith") == ("Jane Smith", "")
 
-    def invalidate_cache(self):
-        pass
+    def test_blank(self):
+        assert parse_person_text("") == ("", "")
+        assert parse_person_text(None) == ("", "")
 
+    def test_legacy_person_dict(self):
+        assert parse_person_text({"Title": "Jane", "Email": "j@x.com"}) == ("Jane", "j@x.com")
 
-# ---------------------------------------------------------------------------
-# Dynamic role resolution
-# ---------------------------------------------------------------------------
-
-class TestResolveDynamicRole:
-
-    def test_direct_manager_resolves(self):
-        name, email = _resolve_dynamic_role("Direct Manager", FULL_FIELDS)
-        assert name == "Chris Hayslip"
-        assert email == "chayslip@streamflo.com"
-
-    def test_second_level_manager_resolves(self):
-        name, email = _resolve_dynamic_role("2nd Level Manager", FULL_FIELDS)
-        assert name == "Keith Haynes"
-        assert email == "khaynes@streamflo.com"
-
-    def test_hiring_manager_resolves(self):
-        name, email = _resolve_dynamic_role("Hiring Manager", FULL_FIELDS)
-        assert email == "chayslip@streamflo.com"
-
-    def test_gm_director_resolves(self):
-        name, email = _resolve_dynamic_role("GM/Director", FULL_FIELDS)
-        assert name == "Quanah Gilmore"
-        assert email == "qgilmore@streamflo.com"
-
-    def test_executive_resolves(self):
-        name, email = _resolve_dynamic_role("Executive", FULL_FIELDS)
-        assert name == "Sean Wilcock"
-        assert email == "swilcock@streamflo.com"
-
-    def test_ceo_resolves(self):
-        name, email = _resolve_dynamic_role("CEO", FULL_FIELDS)
-        assert name == "Mark McNeill"
-        assert email == "mmcneill@streamflo.com"
-
-    def test_missing_email_raises(self):
-        fields = dict(FULL_FIELDS)
-        fields["GMDirectorEmail"] = ""
-        with pytest.raises(ValueError, match="Missing email"):
-            _resolve_dynamic_role("GM/Director", fields)
-
-    def test_missing_field_entirely_raises(self):
-        fields = {k: v for k, v in FULL_FIELDS.items() if "GMDirector" not in k}
-        with pytest.raises(ValueError, match="Missing email"):
-            _resolve_dynamic_role("GM/Director", fields)
-
-    def test_non_dynamic_role_raises(self):
-        with pytest.raises(ValueError, match="not a dynamic role"):
-            _resolve_dynamic_role("HR Manager", FULL_FIELDS)
-
-
-# ---------------------------------------------------------------------------
-# Static role resolution via HRRolesClient
-# ---------------------------------------------------------------------------
-
-class TestStaticRoleViaRolesClient:
-
-    def test_hr_manager_resolves(self):
-        name, email = FakeRolesClient().resolve_role("HR Manager")
-        assert email == "rlperkins@streamflo.com"
-        assert name == "Rae-Lynn Perkins"
-
-    def test_payroll_manager_resolves(self):
-        _, email = FakeRolesClient().resolve_role("Payroll Manager")
-        assert email == "gthedford@streamflo.com"
-
-    def test_benefits_specialist_resolves(self):
-        _, email = FakeRolesClient().resolve_role("Benefits Specialist")
-        assert email == "scarrisalez@streamflo.com"
-
-    def test_hr_generalist_resolves(self):
-        _, email = FakeRolesClient().resolve_role("HR Generalist")
-        assert email == "tparashar@streamflo.com"
-
-    def test_unknown_role_raises(self):
-        with pytest.raises(ValueError, match="No active entry"):
-            FakeRolesClient().resolve_role("Unknown Role")
-
-    def test_empty_roles_client_raises(self):
-        with pytest.raises(ValueError):
-            FakeRolesClient(roles={}).resolve_role("HR Manager")
-
-
-# ---------------------------------------------------------------------------
-# resolve_role — combined fallback logic
-# ---------------------------------------------------------------------------
 
 class TestResolveRole:
+    @pytest.mark.parametrize("role,email", [
+        ("Direct Manager",      "chayslip@streamflo.com"),
+        ("2nd Level Manager",   "khaynes@streamflo.com"),
+        ("Hiring Manager",      "chayslip@streamflo.com"),
+        ("HR Manager",          "rlperkins@streamflo.com"),
+        ("GM/Director",         "qgilmore@streamflo.com"),
+        ("Executive",           "swilcock@streamflo.com"),
+        ("CEO",                 "mmcneill@streamflo.com"),
+        ("Payroll Manager",     "gthedford@streamflo.com"),
+        ("Benefits Specialist", "scarrisalez@streamflo.com"),
+        ("HR Generalist",       "tparashar@streamflo.com"),
+    ])
+    def test_role_resolves_from_form(self, role, email):
+        name, got = resolve_role(role, FORM_FIELDS)
+        assert got == email
+        assert name
 
-    def test_dynamic_role_resolved_from_fields(self):
-        name, email = resolve_role("Direct Manager", FULL_FIELDS, FakeRolesClient())
-        assert email == "chayslip@streamflo.com"
+    def test_every_chain_role_has_a_column(self):
+        for role in ["Direct Manager", "2nd Level Manager", "Hiring Manager", "HR Manager",
+                     "GM/Director", "Executive", "CEO", "Payroll Manager",
+                     "Benefits Specialist", "HR Generalist"]:
+            assert role in ROLE_TEXT_FIELD
 
-    def test_static_role_resolved_via_roles_client(self):
-        name, email = resolve_role("HR Manager", {}, FakeRolesClient())
-        assert email == "rlperkins@streamflo.com"
-        assert name == "Rae-Lynn Perkins"
+    def test_email_case_preserved(self):
+        fields = dict(FORM_FIELDS)
+        fields["GMDirectorText"] = "Q Gilmore <QGilmore@Streamflo.com>"
+        assert resolve_role("GM/Director", fields)[1] == "QGilmore@Streamflo.com"
 
-    def test_ceo_resolved_from_fields(self):
-        name, email = resolve_role("CEO", FULL_FIELDS, FakeRolesClient())
-        assert email == "mmcneill@streamflo.com"
+    def test_missing_value_raises(self):
+        fields = dict(FORM_FIELDS)
+        fields["HRManagerText"] = ""
+        with pytest.raises(ValueError, match="Missing approver email"):
+            resolve_role("HR Manager", fields)
 
-    def test_missing_dynamic_email_raises(self):
-        fields = dict(FULL_FIELDS)
-        fields["CEOEmail"] = ""
-        with pytest.raises(ValueError):
-            resolve_role("CEO", fields, FakeRolesClient())
+    def test_missing_column_raises(self):
+        fields = {k: v for k, v in FORM_FIELDS.items() if k != "HRManagerText"}
+        with pytest.raises(ValueError, match="Missing approver email"):
+            resolve_role("HR Manager", fields)
 
-    def test_email_returned_as_is_from_fields(self):
-        fields = dict(FULL_FIELDS)
-        fields["GMDirectorEmail"] = "QGilmore@Streamflo.com"
-        _, email = resolve_role("GM/Director", fields, FakeRolesClient())
-        assert email == "QGilmore@Streamflo.com"
-
-    def test_all_dynamic_roles_resolvable(self):
-        dynamic_roles = [
-            "Direct Manager", "2nd Level Manager", "Hiring Manager",
-            "GM/Director", "Executive", "CEO",
-        ]
-        for role in dynamic_roles:
-            name, email = resolve_role(role, FULL_FIELDS, FakeRolesClient())
-            assert "@" in email, f"{role} resolved to invalid email: {email}"
-
-    def test_all_static_roles_resolvable(self):
-        static_roles = ["HR Manager", "Payroll Manager", "Benefits Specialist", "HR Generalist"]
-        for role in static_roles:
-            name, email = resolve_role(role, {}, FakeRolesClient())
-            assert "@" in email, f"{role} resolved to invalid email: {email}"
-
-    def test_no_roles_client_raises_for_static_role(self):
-        with pytest.raises(ValueError, match="no HRRolesClient provided"):
-            resolve_role("HR Manager", {}, None)
-
-    def test_dynamic_role_does_not_need_roles_client(self):
-        """Dynamic roles resolve from fields alone — no client needed."""
-        name, email = resolve_role("Direct Manager", FULL_FIELDS, None)
-        assert email == "chayslip@streamflo.com"
+    def test_unknown_role_raises(self):
+        with pytest.raises(ValueError, match="no approver column"):
+            resolve_role("Wizard", FORM_FIELDS)
