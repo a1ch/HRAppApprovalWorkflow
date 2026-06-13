@@ -50,6 +50,7 @@ class ListConfig:
 
     # ─ Status column ──────────────────────────────────────────
     status_col: str               = "Approval Status"
+    status_filter_field: Optional[str] = None   # exact internal name for OData $filter (overrides space-encoding)
     pending_status_value: str     = "Pending"
     in_progress_status_value: str = "In Progress"
     approved_status_value: str    = "Approved"
@@ -147,6 +148,7 @@ LIST_CONFIGS: dict[str, ListConfig] = {
         effective_date_col="Requested Date",
         notes_col="Screening Criteria",
         status_col="Approval Status Value",
+        status_filter_field="Approval_x0020_Status_x0020_Valu",  # SP truncated internal name (32 chars)
         rejected_status_value="Declined",
         in_progress_status_value="Pending", # no In Progress choice on this list
     ),

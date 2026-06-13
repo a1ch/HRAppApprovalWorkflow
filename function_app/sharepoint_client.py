@@ -134,7 +134,7 @@ class SharePointClient:
     def get_pending_items_for_list(self, list_key: str, config: "ListConfig") -> list[dict]:
         site_id = self._get_site_id()
         list_id = self._get_list_id(config.display_name)
-        status_col = config.status_col.replace(" ", "_x0020_")
+        status_col = config.status_filter_field or config.status_col.replace(" ", "_x0020_")
         pending_val = config.pending_status_value
         url = (
             f"{self.GRAPH_BASE}/sites/{site_id}/lists/{list_id}/items"

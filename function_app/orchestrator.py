@@ -195,7 +195,7 @@ class ApprovalOrchestrator:
         # Resolve who SHOULD be approving this step
         try:
             expected_name, expected_email = resolve_role(
-                chain[current_step], employee_email, self.entra, self.roles_client
+                chain[current_step], fields
             )
         except ValueError as e:
             logger.error("Role resolution failed for step %d: %s", current_step, e)
