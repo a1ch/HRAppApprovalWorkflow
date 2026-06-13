@@ -153,20 +153,6 @@ LIST_CONFIGS: dict[str, ListConfig] = {
         in_progress_status_value="Pending", # no In Progress choice on this list
     ),
 
-    "promotion": ListConfig(
-        display_name="Promotion Title Change With Pay",
-        list_path="Lists/Promotion%20Title%20Change%20With%20Pay",
-        workflow_keys=[
-            "promo_salaried", "promo_hourly",
-            "promo_salaried_rate", "promo_hourly_rate",
-        ],
-        employee_name_col="Employee",
-        employee_col="Employee",            # Person picker — email used for Entra lookup
-        initiator_col="Created By",
-        initiator_is_person=True,
-        request_type_col="Change Type",
-        status_col="Approval Status",
-    ),
 }
 
 
