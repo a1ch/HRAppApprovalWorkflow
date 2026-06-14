@@ -1,19 +1,18 @@
 """
 Approval orchestration engine.
 
-Role resolution — two sources only:
+Role resolution - ONE source:
 
-  1. Entra manager chain (Direct Manager, 2nd Level Manager)
-     Walked automatically from the employee's Entra profile.
-     No columns needed on the request form.
+  Approvers are entered on the request form by the submitter. The HR Service
+  Center SPFx app writes each approver as a plain-text "Display Name <email>"
+  value into a dedicated *Text column (DirectManagerText, HRManagerText,
+  GMDirectorText, ExecutiveText, CEOText, PayrollManagerText, etc.) and the
+  function resolves every approval-chain role straight from those columns via
+  resolve_role().
 
-  2. HR Approval Roles list (everything else)
-     HR Manager, Payroll Manager, Benefits Specialist, HR Generalist,
-     GM/Director, Executive, CEO, Hiring Manager.
-     HR maintains this list — no code change needed when people change.
-
-All approval chain Person picker columns have been removed from the
-SharePoint lists. The lists now only store what the user fills in.
+  Do NOT delete the *Text approver columns from the lists - resolution depends
+  on them. (EntraClient / HRRolesClient are retained for the debug endpoints
+  and possible future use; they are not used in the live approval path.)
 """
 
 import logging
@@ -143,6 +142,15 @@ class ApprovalOrchestrator:
         config: Optional[ListConfig] = None,
     ) -> None:
         fields       = prefetched_fields or self.sp.get_item(item_id)
+
+        # Re-processing guard: once an item is initialised (we stamp
+        # WorkflowCategory on first pickup) skip it. Without this, a list whose
+        # "in progress" status equals the polled "pending" value (Workforce
+        # Requisition) would be re-picked every cycle and reset to step 0.
+        if str(fields.get("WorkflowCategory") or "").strip():
+            logger.info("Item %s already initialised - skipping re-process", item_id)
+            return
+
         workflow_key = fields.get("WorkflowKey", "")
         workflow     = get_workflow(workflow_key)
 
@@ -169,7 +177,15 @@ class ApprovalOrchestrator:
             },
             list_display_name=config.display_name if config else None,
         )
-        self._send_step_email(item_id, fields, workflow, step=0, previous=[], config=config)
+        sent = self._send_step_email(item_id, fields, workflow, step=0, previous=[], config=config)
+        if not sent:
+            self.sp.mark_error(
+                item_id,
+                "Could not send the first approval email - an approver was missing "
+                "or could not be resolved. Check the approver fields on the request.",
+                list_display_name=config.display_name if config else None,
+                config=config,
+            )
 
     def handle_approval_action(
         self,
@@ -223,6 +239,9 @@ class ApprovalOrchestrator:
             config=config,
         )
 
+        # Re-fetch so the decision we just recorded is reflected in fields
+        # (used for the next approver email and the final audit PDF).
+        fields = self.sp.get_item(item_id, list_display_name=list_display_name)
         request_details = self._extract_request_details(fields, workflow, config)
 
         if action == "reject":
@@ -272,7 +291,7 @@ class ApprovalOrchestrator:
         step: int,
         previous: list[dict],
         config: Optional[ListConfig] = None,
-    ) -> None:
+    ) -> bool:
         chain          = workflow.approval_chain + (["CEO"] if workflow.requires_ceo else [])
         role           = chain[step]
         employee_email = self._get_employee_email(fields, config)
@@ -280,8 +299,8 @@ class ApprovalOrchestrator:
         try:
             name, email = resolve_role(role, fields)
         except ValueError as e:
-            logger.error("Cannot send step %d email — role resolution failed: %s", step, e)
-            return
+            logger.error("Cannot send step %d email role resolution failed: %s", step, e)
+            return False
 
         request_details = self._extract_request_details(fields, workflow, config)
         msg = build_approver_email(
@@ -298,6 +317,7 @@ class ApprovalOrchestrator:
         )
         self.mailer.send(msg)
         logger.info("Sent step %d email to %s (%s)", step, name, email)
+        return True
 
     def _handle_rejection(
         self,
