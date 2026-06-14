@@ -104,7 +104,7 @@ Termination Form, Workforce Requirement Form, Promotion Title Change With Pay):
 | FullyApprovedDate   | FullyApprovedDate   | Date and Time |
 | RejectedBy          | RejectedBy          | Single line   |
 | RejectedDate        | RejectedDate        | Date and Time |
-| ApprovalRecordURL   | ApprovalRecordURL   | Single line   |
+| ApprovalRecordURL   | ApprovalRecordURL   | Single line text **(NOT Hyperlink)** - the function writes it via Microsoft Graph, which cannot set Hyperlink/URL columns |
 | ErrorMessage        | ErrorMessage        | Single line   |
 
 **Per-step approval record columns (add steps 0–4, 5 total):**
