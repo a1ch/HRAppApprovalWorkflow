@@ -5,6 +5,11 @@ Uses reportlab — no external services, runs entirely inside the Azure Function
 
 import io
 from datetime import datetime, timezone
+try:
+    from zoneinfo import ZoneInfo
+    _MT = ZoneInfo("America/Denver")
+except Exception:
+    _MT = timezone.utc
 from reportlab.lib.pagesizes import letter
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.units import inch
@@ -91,7 +96,13 @@ def _fmt_date(iso_str: str) -> str:
         return "—"
     try:
         dt = datetime.fromisoformat(iso_str.replace("Z", "+00:00"))
-        return dt.strftime("%B %d, %Y %I:%M %p UTC")
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        local = dt.astimezone(_MT)
+        if (local.hour, local.minute, local.second) == (0, 0, 0):
+            return local.strftime(f"%B {local.day}, %Y")
+        hour12 = local.strftime("%I").lstrip("0") or "12"
+        return local.strftime(f"%B {local.day}, %Y at {hour12}:%M %p %Z")
     except Exception:
         return iso_str
 

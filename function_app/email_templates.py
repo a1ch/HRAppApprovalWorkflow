@@ -13,6 +13,31 @@ Design matches the Stream-Flo Group "SharePoint Daily Digest" emails:
 
 from dataclasses import dataclass
 from urllib.parse import urlencode
+from datetime import datetime, timezone
+try:
+    from zoneinfo import ZoneInfo
+    _MT = ZoneInfo("America/Denver")
+except Exception:
+    _MT = timezone.utc
+
+
+def _fmt_dt(value) -> str:
+    """Render an ISO/UTC datetime as friendly Mountain Time, e.g. 'Jun 13, 2026 at 6:40 PM MDT'.
+    Date-only / midnight values render as just 'Jun 13, 2026'. Unparseable values pass through."""
+    if not value:
+        return "&mdash;"
+    s = str(value).strip()
+    try:
+        dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
+    except Exception:
+        return s
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    local = dt.astimezone(_MT)
+    if (local.hour, local.minute, local.second) == (0, 0, 0):
+        return local.strftime(f"%b {local.day}, %Y")
+    hour12 = local.strftime("%I").lstrip("0") or "12"
+    return local.strftime(f"%b {local.day}, %Y at {hour12}:%M %p %Z")
 
 
 # ── Brand palette (from the SharePoint Daily Digest) ───────────────────────
@@ -126,7 +151,7 @@ def build_approver_email(
     employee  = request_details.get("employee_name", "[Employee]")
     req_type  = request_details.get("request_type", workflow_name)
     initiator = request_details.get("initiator_name", "[Initiator]")
-    submitted = request_details.get("submitted_date", "")
+    submitted = _fmt_dt(request_details.get("submitted_date", ""))
     notes     = request_details.get("notes", "")
 
     approve_url = _approval_link(base_url, request_id, approver_email, "approve", list_key)
@@ -153,7 +178,7 @@ def build_approver_email(
         ("Request type", req_type),
         ("Employee", employee),
         ("Initiated by", initiator),
-        ("Submitted", submitted or "&mdash;"),
+        ("Submitted", submitted),
     ]
     if notes:
         rows.append(("Notes", notes))
@@ -205,7 +230,7 @@ def build_notify_email(
         ("Initiated by", initiator),
     ]
     if effective:
-        rows.append(("Effective date", effective))
+        rows.append(("Effective date", _fmt_dt(effective)))
     rows.append(("Status", f'<span style="color:{GREEN};font-weight:700;">Fully Approved</span>'))
 
     inner = f"""
