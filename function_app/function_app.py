@@ -51,7 +51,7 @@ def poll_new_requests(timer: func.TimerRequest) -> None:
 # ── 2. Approval action ────────────────────────────────────────────────────
 
 @app.function_name("ApprovalAction")
-@app.route(route="approval-action", methods=["GET", "POST"])
+@app.route(route="approval-action", methods=["GET", "POST"], auth_level=func.AuthLevel.ANONYMOUS)
 def approval_action(req: func.HttpRequest) -> func.HttpResponse:
     request_id     = req.params.get("request_id", "").strip()
     approver_email = req.params.get("approver", "").strip()
@@ -128,7 +128,7 @@ def approval_action(req: func.HttpRequest) -> func.HttpResponse:
 # ── 3. Rejection form — GET ───────────────────────────────────────────────
 
 @app.function_name("RejectionFormGet")
-@app.route(route="rejection-form", methods=["GET"])
+@app.route(route="rejection-form", methods=["GET"], auth_level=func.AuthLevel.ANONYMOUS)
 def rejection_form_get(req: func.HttpRequest) -> func.HttpResponse:
     request_id     = req.params.get("request_id", "").strip()
     approver_email = req.params.get("approver", "").strip()
@@ -164,7 +164,7 @@ def rejection_form_get(req: func.HttpRequest) -> func.HttpResponse:
 # ── 4. Rejection form — POST ──────────────────────────────────────────────
 
 @app.function_name("RejectionFormPost")
-@app.route(route="rejection-form", methods=["POST"])
+@app.route(route="rejection-form", methods=["POST"], auth_level=func.AuthLevel.ANONYMOUS)
 def rejection_form_post(req: func.HttpRequest) -> func.HttpResponse:
     try:
         form = req.form
