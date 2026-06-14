@@ -23,6 +23,7 @@ import requests as http
 from orchestrator import ApprovalOrchestrator
 from rejection_form import build_rejection_form, build_rejection_confirmed_page
 from list_configs import LIST_CONFIGS, ListConfig
+from signing import verify
 
 logger = logging.getLogger(__name__)
 app = func.FunctionApp(http_auth_level=func.AuthLevel.FUNCTION)
@@ -37,6 +38,19 @@ def get_orchestrator() -> ApprovalOrchestrator:
 
 
 # ── 1. Timer trigger ──────────────────────────────────────────────────────
+
+def _bad_signature_response() -> func.HttpResponse:
+    """Returned when an approval/rejection link fails HMAC verification."""
+    return func.HttpResponse(
+        _html_response(
+            "Invalid or Expired Link",
+            "This approval link could not be verified. It may have been altered, or "
+            "it is no longer valid. Please use the most recent approval email, or "
+            "contact HR if you need a new one.",
+            error=True,
+        ),
+        status_code=403, mimetype="text/html",
+    )
 
 @app.function_name("PollNewRequests")
 @app.timer_trigger(arg_name="timer", schedule="0 */5 * * * *", run_on_startup=False)
@@ -58,6 +72,7 @@ def approval_action(req: func.HttpRequest) -> func.HttpResponse:
     approver_email = (_src.get("approver") or "").strip()
     action         = (_src.get("action") or "").strip().lower()
     list_key       = (_src.get("list_key") or "").strip()
+    signature      = (_src.get("sig") or "").strip()
 
     if not all([request_id, approver_email, action]):
         return func.HttpResponse(
@@ -71,12 +86,18 @@ def approval_action(req: func.HttpRequest) -> func.HttpResponse:
             status_code=400, mimetype="text/html",
         )
 
+    if not verify(request_id, approver_email, action, list_key, signature):
+        logger.warning("Bad signature on approval link for request %s (approver %s, action %s)",
+                       request_id, approver_email, action)
+        return _bad_signature_response()
+
     if action == "reject":
         list_key = req.params.get("list_key", "").strip()
         params = urlencode({
             "request_id": request_id,
             "approver":   approver_email,
             "list_key":   list_key,
+            "sig":        signature,
         })
         return func.HttpResponse(
             status_code=302,
@@ -86,7 +107,7 @@ def approval_action(req: func.HttpRequest) -> func.HttpResponse:
 
     if req.method != "POST":
         return func.HttpResponse(
-            _confirm_approval_page(request_id, approver_email, list_key),
+            _confirm_approval_page(request_id, approver_email, list_key, signature),
             mimetype="text/html",
         )
 
@@ -142,12 +163,17 @@ def rejection_form_get(req: func.HttpRequest) -> func.HttpResponse:
     request_id     = (_src.get("request_id") or "").strip()
     approver_email = (_src.get("approver") or "").strip()
     list_key       = req.params.get("list_key", "").strip()
+    signature      = req.params.get("sig", "").strip()
 
     if not all([request_id, approver_email, list_key]):
         return func.HttpResponse(
             _html_response("Invalid Request", "Missing required parameters.", error=True),
             status_code=400, mimetype="text/html",
         )
+
+    if not verify(request_id, approver_email, "reject", list_key, signature):
+        logger.warning("Bad signature on rejection-form GET for request %s", request_id)
+        return _bad_signature_response()
 
     employee_name = ""
     request_type  = ""
@@ -166,6 +192,7 @@ def rejection_form_get(req: func.HttpRequest) -> func.HttpResponse:
         list_key=list_key,
         employee_name=employee_name,
         request_type=request_type,
+        signature=signature,
     )
     return func.HttpResponse(html, mimetype="text/html")
 
@@ -181,6 +208,7 @@ def rejection_form_post(req: func.HttpRequest) -> func.HttpResponse:
         approver_email = form.get("approver", "").strip()
         list_key       = form.get("list_key", "").strip()
         comments       = form.get("comments", "").strip()
+        signature      = form.get("sig", "").strip()
     except Exception:
         return func.HttpResponse(
             _html_response("Error", "Could not read form data.", error=True),
@@ -192,6 +220,10 @@ def rejection_form_post(req: func.HttpRequest) -> func.HttpResponse:
             _html_response("Invalid Request", "Missing required parameters.", error=True),
             status_code=400, mimetype="text/html",
         )
+
+    if not verify(request_id, approver_email, "reject", list_key, signature):
+        logger.warning("Bad signature on rejection-form POST for request %s", request_id)
+        return _bad_signature_response()
 
     try:
         result = get_orchestrator().handle_approval_action(
@@ -549,12 +581,12 @@ def _get_expected_columns(config: ListConfig) -> list[str]:
 
 # ── HTML response helper ──────────────────────────────────────────────────
 
-def _confirm_approval_page(request_id: str, approver_email: str, list_key: str) -> str:
+def _confirm_approval_page(request_id: str, approver_email: str, list_key: str, signature: str) -> str:
     """Landing page shown when an Approve link is opened (GET). Records nothing;
     the decision is only saved when the user clicks the button, which POSTs.
     Prevents email link-scanners (e.g. Defender Safe Links) from auto-approving."""
     from html import escape
-    rid, appr, lk = escape(request_id), escape(approver_email), escape(list_key)
+    rid, appr, lk, sg = escape(request_id), escape(approver_email), escape(list_key), escape(signature)
     return f"""<!DOCTYPE html>
 <html lang="en"><head><meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
@@ -572,6 +604,7 @@ def _confirm_approval_page(request_id: str, approver_email: str, list_key: str) 
 <input type="hidden" name="approver" value="{appr}">
 <input type="hidden" name="action" value="approve">
 <input type="hidden" name="list_key" value="{lk}">
+<input type="hidden" name="sig" value="{sg}">
 <button type="submit" style="font-family:'Arial Black','Segoe UI',Arial,sans-serif;background:#1a7a3c;color:#ffffff;border:none;border-radius:8px;padding:13px 30px;font-size:15px;font-weight:700;cursor:pointer;">Approve this request</button>
 </form>
 <div style="font-size:12px;color:#94a3b8;margin-top:18px;">Request ID: {rid}</div>

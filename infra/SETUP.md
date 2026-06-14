@@ -163,6 +163,10 @@ az keyvault secret set --vault-name streamflo-hr-kv --name SP-TENANT-ID     --va
 az keyvault secret set --vault-name streamflo-hr-kv --name SP-CLIENT-ID     --value "<client-id>"
 az keyvault secret set --vault-name streamflo-hr-kv --name SP-CLIENT-SECRET --value "<client-secret>"
 
+# Approval link signing key — a random secret that signs the Approve/Reject links.
+# Generate one first, e.g.:  python -c "import secrets; print(secrets.token_hex(32))"
+az keyvault secret set --vault-name streamflo-hr-kv --name APPROVAL-SIGNING-KEY --value "<paste-generated-key>"
+
 # 5. Deploy function code
 cd function_app
 func azure functionapp publish streamflo-hr-func --python
@@ -184,6 +188,12 @@ az functionapp config appsettings set \
   --name streamflo-hr-func \
   --resource-group streamflo-hr-rg \
   --settings MAIL_SENDER_ADDRESS=hr-approvals@streamflo.com
+
+# 9. Wire the signing key into the app as a Key Vault reference
+az functionapp config appsettings set \
+  --name streamflo-hr-func \
+  --resource-group streamflo-hr-rg \
+  --settings APPROVAL_SIGNING_KEY="@Microsoft.KeyVault(VaultName=streamflo-hr-kv;SecretName=APPROVAL-SIGNING-KEY)"
 ```
 
 ---
@@ -199,6 +209,7 @@ az functionapp config appsettings set \
 | MAIL_SENDER_ADDRESS    | App Settings | Shared mailbox address for outbound email        |
 | APPROVAL_BASE_URL      | App Settings | Function App URL (set after first deploy)        |
 | HR_ROLES_LIST_NAME     | App Settings | Name of the HR Approval Roles SharePoint list    |
+| APPROVAL_SIGNING_KEY   | Key Vault    | HMAC secret used to sign + verify approval links |
 
 > No email addresses are hardcoded anywhere. All role-to-person mappings live in the
 > HR Approval Roles SharePoint list and are managed by HR directly.
@@ -253,3 +264,20 @@ A PDF is generated and saved to HR Records after every fully approved request.
 Each of the 6 workflow types has its own PDF template showing the relevant fields
 for that request type (e.g. the Termination PDF shows last day worked, severance
 eligibility etc. while the Offer Letter PDF shows wage rate, vacation accrual, rotation).
+
+---
+
+## 8. Signed Approval Links (security)
+
+The `/api/approval-action` and `/api/rejection-form` routes are anonymous so approvers
+can click straight from email without signing in. To stop those links from being forged
+or tampered with, every link carries an HMAC-SHA256 signature (`sig=`) over its
+parameters (`request_id`, `approver`, `action`, `list_key`), keyed with
+`APPROVAL_SIGNING_KEY`. The function recomputes and constant-time-compares the signature
+on every click and returns **403 Invalid or Expired Link** if it does not match.
+
+- The key never appears in a link or email — only the signature does.
+- Rotating `APPROVAL-SIGNING-KEY` invalidates all outstanding links; approvers just use
+  the most recent email. Do this if you suspect the key was exposed.
+- If `APPROVAL_SIGNING_KEY` is unset, signing/verification fails closed (links are
+  rejected rather than silently trusted), so the setting must be present before go-live.

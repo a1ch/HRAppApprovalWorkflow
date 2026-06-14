@@ -87,6 +87,7 @@ resource funcApp 'Microsoft.Web/sites@2023-01-01' = {
         // { name: 'SP_TENANT_ID',     value: '@Microsoft.KeyVault(SecretUri=...)' }
         // { name: 'SP_CLIENT_ID',     value: '@Microsoft.KeyVault(SecretUri=...)' }
         // { name: 'SP_CLIENT_SECRET', value: '@Microsoft.KeyVault(SecretUri=...)' }
+        // { name: 'APPROVAL_SIGNING_KEY', value: '@Microsoft.KeyVault(SecretUri=...)' }
         // Role email addresses:
         // { name: 'EMAIL_HR_MANAGER',         value: 'rlperkins@streamflo.com' }
         // { name: 'EMAIL_PAYROLL_MANAGER',     value: 'gthedford@streamflo.com' }

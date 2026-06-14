@@ -14,6 +14,8 @@ Design matches the Stream-Flo Group "SharePoint Daily Digest" emails:
 from dataclasses import dataclass
 from urllib.parse import urlencode
 from datetime import datetime, timezone
+
+from signing import sign
 try:
     from zoneinfo import ZoneInfo
     _MT = ZoneInfo("America/Denver")
@@ -76,6 +78,7 @@ def _approval_link(base_url: str, request_id: str, approver_email: str, action: 
         "approver":   approver_email,
         "action":     action,
         "list_key":   list_key,
+        "sig":        sign(request_id, approver_email, action, list_key),
     })
     return f"{base_url}/api/approval-action?{params}"
 

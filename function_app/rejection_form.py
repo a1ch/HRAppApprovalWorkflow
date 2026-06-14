@@ -13,7 +13,7 @@ Flow:
 
 
 def build_rejection_form(request_id: str, approver_email: str, list_key: str,
-                          employee_name: str, request_type: str) -> str:
+                          employee_name: str, request_type: str, signature: str = "") -> str:
     return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -74,6 +74,7 @@ def build_rejection_form(request_id: str, approver_email: str, list_key: str,
     <input type="hidden" name="request_id" value="{request_id}">
     <input type="hidden" name="approver" value="{approver_email}">
     <input type="hidden" name="list_key" value="{list_key}">
+    <input type="hidden" name="sig" value="{signature}">
 
     <label for="comments">Reason for rejection</label>
     <textarea id="comments" name="comments"
