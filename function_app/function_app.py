@@ -133,6 +133,18 @@ def approval_action(req: func.HttpRequest) -> func.HttpResponse:
             status_code=403, mimetype="text/html",
         )
 
+    # Idempotent re-click: the step was already decided (duplicate or stale
+    # email, or a second click). Show a friendly page instead of crashing.
+    if result.get("message"):
+        return func.HttpResponse(
+            _html_response(
+                "Already Recorded",
+                "This step has already been recorded - no further action is needed.",
+                success=True,
+            ),
+            mimetype="text/html",
+        )
+
     if result.get("outcome") == "fully_approved":
         return func.HttpResponse(
             _html_response(
@@ -143,13 +155,24 @@ def approval_action(req: func.HttpRequest) -> func.HttpResponse:
             mimetype="text/html",
         )
 
-    next_step = result.get("next_step", "?")
+    if result.get("outcome") == "advanced":
+        next_step = result.get("next_step", 0)
+        try:
+            human_step = int(next_step) + 1
+        except (TypeError, ValueError):
+            human_step = next_step
+        return func.HttpResponse(
+            _html_response(
+                "Approved - Forwarded",
+                f"Your approval has been recorded. The request has been forwarded to the next approver (step {human_step}).",
+                success=True,
+            ),
+            mimetype="text/html",
+        )
+
+    # Fallback for any other outcome - acknowledge without crashing.
     return func.HttpResponse(
-        _html_response(
-            "Approved — Forwarded",
-            f"Your approval has been recorded. The request has been forwarded to the next approver (step {next_step + 1}).",
-            success=True,
-        ),
+        _html_response("Recorded", "Your decision has been recorded.", success=True),
         mimetype="text/html",
     )
 
