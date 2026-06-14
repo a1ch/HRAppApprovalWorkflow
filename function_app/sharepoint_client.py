@@ -134,7 +134,7 @@ class SharePointClient:
     def get_pending_items_for_list(self, list_key: str, config: "ListConfig") -> list[dict]:
         site_id = self._get_site_id()
         list_id = self._get_list_id(config.display_name)
-        status_col = config.status_filter_field or config.status_col.replace(" ", "_x0020_")
+        status_col = config.status_internal
         pending_val = config.pending_status_value
         url = (
             f"{self.GRAPH_BASE}/sites/{site_id}/lists/{list_id}/items"
@@ -180,7 +180,7 @@ class SharePointClient:
             fields[f"ApproverStep{step}Comments"] = comments
         if decision == "reject":
             rejected_val = config.rejected_status_value if config else "Rejected"
-            status_col   = config.status_col if config else "Approval Status"
+            status_col   = config.status_internal if config else "Approval_x0020_Status"
             fields[status_col]   = rejected_val
             fields["RejectedBy"]   = approver_name
             fields["RejectedDate"] = now
@@ -194,7 +194,7 @@ class SharePointClient:
         config: Optional["ListConfig"] = None,
     ) -> None:
         in_progress_val = config.in_progress_status_value if config else "In Progress"
-        status_col      = config.status_col if config else "Approval Status"
+        status_col      = config.status_internal if config else "Approval_x0020_Status"
         self.update_item(item_id, {
             "CurrentApprovalStep": next_step,
             status_col: in_progress_val,
@@ -208,7 +208,7 @@ class SharePointClient:
     ) -> None:
         now          = datetime.now(timezone.utc).isoformat()
         approved_val = config.approved_status_value if config else "Approved"
-        status_col   = config.status_col if config else "Approval Status"
+        status_col   = config.status_internal if config else "Approval_x0020_Status"
         self.update_item(item_id, {
             status_col:          approved_val,
             "FullyApprovedDate": now,
@@ -223,7 +223,7 @@ class SharePointClient:
     ) -> None:
         now          = datetime.now(timezone.utc).isoformat()
         rejected_val = config.rejected_status_value if config else "Rejected"
-        status_col   = config.status_col if config else "Approval Status"
+        status_col   = config.status_internal if config else "Approval_x0020_Status"
         self.update_item(item_id, {
             status_col:    rejected_val,
             "RejectedBy":   rejected_by,
@@ -238,7 +238,7 @@ class SharePointClient:
         config: Optional["ListConfig"] = None,
     ) -> None:
         error_val  = config.error_status_value if config else "Error"
-        status_col = config.status_col if config else "Approval Status"
+        status_col = config.status_internal if config else "Approval_x0020_Status"
         self.update_item(item_id, {
             status_col:     error_val,
             "ErrorMessage": message,

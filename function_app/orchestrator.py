@@ -158,7 +158,7 @@ class ApprovalOrchestrator:
 
         logger.info("New request %s — %s", item_id, workflow.request_type)
         in_progress = config.in_progress_status_value if config else "In Progress"
-        status_col  = config.status_col if config else "Approval Status"
+        status_col  = config.status_internal if config else "Approval_x0020_Status"
 
         self.sp.update_item(
             item_id,

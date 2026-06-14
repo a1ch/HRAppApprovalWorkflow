@@ -57,6 +57,11 @@ class ListConfig:
     rejected_status_value: str    = "Rejected"
     error_status_value: str       = "Error"
 
+    @property
+    def status_internal(self) -> str:
+        """Internal field name of the status column (for OData filter and field writes)."""
+        return self.status_filter_field or self.status_col.replace(" ", "_x0020_")
+
 
 LIST_CONFIGS: dict[str, ListConfig] = {
 
