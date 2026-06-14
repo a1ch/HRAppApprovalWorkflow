@@ -95,6 +95,10 @@ def _fmt_date(iso_str: str) -> str:
     if not iso_str:
         return "—"
     try:
+        _s = iso_str.strip()
+        if len(_s) == 10 and "T" not in _s and _s.count("-") == 2:
+            d = datetime.strptime(_s, "%Y-%m-%d")
+            return d.strftime(f"%B {d.day}, %Y")
         dt = datetime.fromisoformat(iso_str.replace("Z", "+00:00"))
         if dt.tzinfo is None:
             dt = dt.replace(tzinfo=timezone.utc)

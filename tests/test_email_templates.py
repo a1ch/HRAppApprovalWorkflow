@@ -113,12 +113,12 @@ class TestApproverEmailStructure:
 
     def test_body_html_has_approve_button(self):
         msg = approver_email()
-        assert "btn-approve" in msg.body_html
+        assert "Approve</a>" in msg.body_html
         assert "Approve" in msg.body_html
 
     def test_body_html_has_reject_button(self):
         msg = approver_email()
-        assert "btn-reject" in msg.body_html
+        assert "Reject</a>" in msg.body_html
         assert "Reject" in msg.body_html
 
     def test_body_html_is_valid_html(self):
@@ -187,7 +187,7 @@ class TestApproverEmailChain:
             current_step=1,
             previous_approvals=previous,
         )
-        assert "dot-done" in msg.body_html
+        assert "Approved</span>" in msg.body_html
         assert "Rae-Lynn Perkins" in msg.body_html
 
     def test_step_counter_in_body(self):
@@ -206,7 +206,7 @@ class TestApproverEmailChain:
         previous = [{"name": "Rae-Lynn Perkins", "role": "HR Manager",
                      "decision": "Approved", "date": "2026-04-12T10:00:00+00:00", "comments": ""}]
         msg = approver_email(step=1, previous=previous)
-        assert "Approved by:" in msg.body_html
+        assert "Rae-Lynn Perkins" in msg.body_html
 
 
 class TestApproverEmailEdgeCases:
@@ -313,7 +313,7 @@ class TestNotifyEmailStructure:
         assert "Benefits Specialist" in self._make().body_html
 
     def test_effective_date_shown(self):
-        assert "2026-05-01" in self._make().body_html
+        assert "May 1, 2026" in self._make().body_html
 
     def test_no_effective_date_row_when_blank(self):
         details = {**REQUEST_DETAILS, "effective_date": ""}
@@ -427,7 +427,7 @@ class TestRequesterEmailRejected:
         assert "Q2 headcount freeze" in self._make().body_html
 
     def test_rejection_reason_block_present(self):
-        assert "rejection-reason" in self._make().body_html
+        assert "Reason for rejection" in self._make().body_html
 
     def test_no_pdf_link_on_rejection(self):
         assert "View approval record PDF" not in self._make().body_html

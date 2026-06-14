@@ -27,6 +27,12 @@ def _fmt_dt(value) -> str:
     if not value:
         return "&mdash;"
     s = str(value).strip()
+    if len(s) == 10 and "T" not in s and s.count("-") == 2:
+        try:
+            d = datetime.strptime(s, "%Y-%m-%d")
+            return d.strftime(f"%b {d.day}, %Y")
+        except Exception:
+            return s
     try:
         dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
     except Exception:
