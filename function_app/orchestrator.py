@@ -284,6 +284,7 @@ class ApprovalOrchestrator:
 
         request_details = self._extract_request_details(fields, workflow, config)
         msg = build_approver_email(
+            list_key=(fields.get("_list_key") or next((k for k, v in LIST_CONFIGS.items() if v is config), "")),
             base_url=self.base_url,
             request_id=item_id,
             approver_name=name,
