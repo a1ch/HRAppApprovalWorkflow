@@ -291,6 +291,7 @@ class ApprovalOrchestrator:
         step: int,
         previous: list[dict],
         config: Optional[ListConfig] = None,
+        reminder_days: int = 0,
     ) -> bool:
         chain          = workflow.approval_chain + (["CEO"] if workflow.requires_ceo else [])
         role           = chain[step]
@@ -315,9 +316,25 @@ class ApprovalOrchestrator:
             current_step=step,
             previous_approvals=previous,
         )
+        if reminder_days:
+            msg.subject = f"Reminder - pending {reminder_days} days: {msg.subject}"
         self.mailer.send(msg)
         logger.info("Sent step %d email to %s (%s)", step, name, email)
         return True
+
+    def send_step_reminder(self, item_id: str, fields: dict,
+                           config: Optional[ListConfig], days: int) -> bool:
+        """Re-send the current approver their approve/reject email as a reminder."""
+        workflow = get_workflow(fields.get("WorkflowKey", ""))
+        if not workflow:
+            return False
+        chain = workflow.approval_chain + (["CEO"] if workflow.requires_ceo else [])
+        step  = int(fields.get("CurrentApprovalStep", 0) or 0)
+        if step >= len(chain):
+            return False
+        previous = self._collect_previous_approvals(fields, step)
+        return self._send_step_email(item_id, fields, workflow, step=step,
+                                     previous=previous, config=config, reminder_days=days)
 
     def _handle_rejection(
         self,

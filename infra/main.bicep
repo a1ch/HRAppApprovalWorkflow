@@ -84,6 +84,9 @@ resource funcApp 'Microsoft.Web/sites@2023-01-01' = {
         { name: 'MAIL_SENDER_ADDRESS', value: mailSenderAddress }
         { name: 'APPROVAL_BASE_URL', value: approvalBaseUrl }
         { name: 'MONITOR_STALL_HOURS', value: '48' }
+        { name: 'ESCALATION_REMINDER_DAYS', value: '7,14' }
+        { name: 'ESCALATION_FINAL_DAYS', value: '30' }
+        // { name: 'ESCALATION_HR_RECIPIENT', value: 'hr-ops@streamflo.com' }  // defaults to MONITOR_RECIPIENT
         // { name: 'MONITOR_RECIPIENT', value: 'hr-ops@streamflo.com' }  // defaults to MAIL_SENDER_ADDRESS
         // { name: 'WEBSITE_TIME_ZONE', value: 'Mountain Standard Time' }  // localize the daily monitor
         // Secrets below — store in Key Vault references in production:

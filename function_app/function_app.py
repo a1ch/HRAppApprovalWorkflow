@@ -74,6 +74,18 @@ def stuck_item_monitor(timer: func.TimerRequest) -> None:
         logger.exception("StuckItemMonitor error: %s", e)
 
 
+@app.function_name("EscalationCheck")
+@app.timer_trigger(arg_name="timer", schedule="0 30 13 * * *", run_on_startup=False)
+def escalation_check(timer: func.TimerRequest) -> None:
+    """Daily approval reminders (7/14d) + 30-day notice; non-destructive (see escalation.py)."""
+    logger.info("EscalationCheck timer fired")
+    try:
+        import escalation
+        escalation.run(get_orchestrator())
+    except Exception as e:
+        logger.exception("EscalationCheck error: %s", e)
+
+
 # ── 2. Approval action ────────────────────────────────────────────────────
 
 @app.function_name("ApprovalAction")

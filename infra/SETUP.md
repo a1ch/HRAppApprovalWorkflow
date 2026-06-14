@@ -213,6 +213,9 @@ az functionapp config appsettings set \
 | MONITOR_RECIPIENT      | App Settings | Email that gets the daily stuck-item digest (default: MAIL_SENDER_ADDRESS) |
 | MONITOR_STALL_HOURS    | App Settings | Hours with no approver action before a request is "stalled" (default: 48) |
 | MONITOR_ALWAYS_SEND    | App Settings | "true" to email even when nothing is stuck (default: only on findings) |
+| ESCALATION_REMINDER_DAYS | App Settings | Days-pending thresholds that re-send the approver a reminder (default "7,14") |
+| ESCALATION_FINAL_DAYS    | App Settings | Days pending before HR + initiator get a final notice (default 30) |
+| ESCALATION_HR_RECIPIENT  | App Settings | HR mailbox for the 30-day notice (default: MONITOR_RECIPIENT / MAIL_SENDER_ADDRESS) |
 
 > No email addresses are hardcoded anywhere. All role-to-person mappings live in the
 > HR Approval Roles SharePoint list and are managed by HR directly.
@@ -281,6 +284,22 @@ unless MONITOR_ALWAYS_SEND=true.
 Schedule: the trigger is `0 0 13 * * *` (13:00 UTC ~ 7am Mountain). Azure Functions
 timers use UTC by default; set the `WEBSITE_TIME_ZONE` app setting (e.g.
 `Mountain Standard Time`) to run it at a fixed local time year-round.
+
+---
+
+## 10. Approval Escalation (reminders, non-destructive)
+
+The `EscalationCheck` timer (`0 30 13 * * *`) runs daily and, for every
+in-progress request, escalates by how long it has sat with no approver action:
+
+- at each `ESCALATION_REMINDER_DAYS` threshold (default 7 and 14) it re-sends the
+  pending approver their approve/reject email, subject-prefixed "Reminder";
+- at `ESCALATION_FINAL_DAYS` (default 30) it emails `ESCALATION_HR_RECIPIENT` and
+  the initiator that the request has been pending that long.
+
+Nothing is auto-cancelled. Progress is tracked per item in the `EscalationStage`
+column (the highest threshold already actioned); it resets automatically when the
+request advances a step.
 
 ---
 ## 8. Signed Approval Links (security)
