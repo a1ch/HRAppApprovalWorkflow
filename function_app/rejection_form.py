@@ -14,6 +14,13 @@ Flow:
 
 def build_rejection_form(request_id: str, approver_email: str, list_key: str,
                           employee_name: str, request_type: str, signature: str = "") -> str:
+    from html import escape
+    request_id = escape(str(request_id))
+    approver_email = escape(str(approver_email))
+    list_key = escape(str(list_key))
+    employee_name = escape(str(employee_name))
+    request_type = escape(str(request_type))
+    signature = escape(str(signature))
     return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
