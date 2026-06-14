@@ -53,9 +53,11 @@ def poll_new_requests(timer: func.TimerRequest) -> None:
 @app.function_name("ApprovalAction")
 @app.route(route="approval-action", methods=["GET", "POST"], auth_level=func.AuthLevel.ANONYMOUS)
 def approval_action(req: func.HttpRequest) -> func.HttpResponse:
-    request_id     = req.params.get("request_id", "").strip()
-    approver_email = req.params.get("approver", "").strip()
-    action         = req.params.get("action", "").strip().lower()
+    _src           = req.form if req.method == "POST" else req.params
+    request_id     = (_src.get("request_id") or "").strip()
+    approver_email = (_src.get("approver") or "").strip()
+    action         = (_src.get("action") or "").strip().lower()
+    list_key       = (_src.get("list_key") or "").strip()
 
     if not all([request_id, approver_email, action]):
         return func.HttpResponse(
@@ -82,13 +84,19 @@ def approval_action(req: func.HttpRequest) -> func.HttpResponse:
             body=b"",
         )
 
+    if req.method != "POST":
+        return func.HttpResponse(
+            _confirm_approval_page(request_id, approver_email, list_key),
+            mimetype="text/html",
+        )
+
     try:
         result = get_orchestrator().handle_approval_action(
             item_id=request_id,
             approver_email=approver_email,
             action="approve",
             comments="",
-            list_key=req.params.get("list_key", "").strip(),
+            list_key=list_key,
         )
     except Exception as e:
         logger.exception("Error processing approval for %s: %s", request_id, e)
@@ -130,8 +138,9 @@ def approval_action(req: func.HttpRequest) -> func.HttpResponse:
 @app.function_name("RejectionFormGet")
 @app.route(route="rejection-form", methods=["GET"], auth_level=func.AuthLevel.ANONYMOUS)
 def rejection_form_get(req: func.HttpRequest) -> func.HttpResponse:
-    request_id     = req.params.get("request_id", "").strip()
-    approver_email = req.params.get("approver", "").strip()
+    _src           = req.form if req.method == "POST" else req.params
+    request_id     = (_src.get("request_id") or "").strip()
+    approver_email = (_src.get("approver") or "").strip()
     list_key       = req.params.get("list_key", "").strip()
 
     if not all([request_id, approver_email, list_key]):
@@ -539,6 +548,36 @@ def _get_expected_columns(config: ListConfig) -> list[str]:
 
 
 # ── HTML response helper ──────────────────────────────────────────────────
+
+def _confirm_approval_page(request_id: str, approver_email: str, list_key: str) -> str:
+    """Landing page shown when an Approve link is opened (GET). Records nothing;
+    the decision is only saved when the user clicks the button, which POSTs.
+    Prevents email link-scanners (e.g. Defender Safe Links) from auto-approving."""
+    from html import escape
+    rid, appr, lk = escape(request_id), escape(approver_email), escape(list_key)
+    return f"""<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="light only">
+<title>Confirm Approval &mdash; Stream-Flo HR</title></head>
+<body style="font-family:'Arial Black','Segoe UI',Arial,sans-serif;background:#eef2f7;margin:0;padding:0;">
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="min-height:100vh;"><tr><td align="center" valign="middle" style="padding:40px 16px;">
+<table role="presentation" width="440" cellpadding="0" cellspacing="0" style="width:440px;max-width:440px;background:#ffffff;border-radius:12px;border:1px solid #e3e8ef;overflow:hidden;">
+<tr><td style="background:#003366;padding:20px 28px;"><div style="color:#ffffff;font-size:16px;font-weight:800;">Stream-Flo USA &mdash; HR Approvals</div></td></tr>
+<tr><td style="padding:28px;">
+<div style="font-size:18px;color:#0f172a;font-weight:800;margin:0 0 10px;">Confirm your approval</div>
+<div style="font-size:14px;color:#1e293b;line-height:1.5;">Click the button below to record your <strong>approval</strong> of this request. Your decision is only saved when you click &mdash; simply opening this page does nothing.</div>
+<form method="POST" action="/api/approval-action" style="margin:24px 0 0;">
+<input type="hidden" name="request_id" value="{rid}">
+<input type="hidden" name="approver" value="{appr}">
+<input type="hidden" name="action" value="approve">
+<input type="hidden" name="list_key" value="{lk}">
+<button type="submit" style="font-family:'Arial Black','Segoe UI',Arial,sans-serif;background:#1a7a3c;color:#ffffff;border:none;border-radius:8px;padding:13px 30px;font-size:15px;font-weight:700;cursor:pointer;">Approve this request</button>
+</form>
+<div style="font-size:12px;color:#94a3b8;margin-top:18px;">Request ID: {rid}</div>
+</td></tr></table>
+</td></tr></table>
+</body></html>"""
 
 def _html_response(title: str, message: str, success: bool = True, error: bool = False) -> str:
     if error:
