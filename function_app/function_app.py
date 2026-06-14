@@ -62,6 +62,18 @@ def poll_new_requests(timer: func.TimerRequest) -> None:
         logger.exception("Error during list poll: %s", e)
 
 
+@app.function_name("StuckItemMonitor")
+@app.timer_trigger(arg_name="timer", schedule="0 0 13 * * *", run_on_startup=False)
+def stuck_item_monitor(timer: func.TimerRequest) -> None:
+    """Daily digest of errored / stalled approval requests (see monitor.py)."""
+    logger.info("StuckItemMonitor timer fired")
+    try:
+        import monitor
+        monitor.scan_and_notify(get_orchestrator())
+    except Exception as e:
+        logger.exception("StuckItemMonitor error: %s", e)
+
+
 # ── 2. Approval action ────────────────────────────────────────────────────
 
 @app.function_name("ApprovalAction")

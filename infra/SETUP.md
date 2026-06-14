@@ -210,6 +210,9 @@ az functionapp config appsettings set \
 | APPROVAL_BASE_URL      | App Settings | Function App URL (set after first deploy)        |
 | HR_ROLES_LIST_NAME     | App Settings | Name of the HR Approval Roles SharePoint list    |
 | APPROVAL_SIGNING_KEY   | Key Vault    | HMAC secret used to sign + verify approval links |
+| MONITOR_RECIPIENT      | App Settings | Email that gets the daily stuck-item digest (default: MAIL_SENDER_ADDRESS) |
+| MONITOR_STALL_HOURS    | App Settings | Hours with no approver action before a request is "stalled" (default: 48) |
+| MONITOR_ALWAYS_SEND    | App Settings | "true" to email even when nothing is stuck (default: only on findings) |
 
 > No email addresses are hardcoded anywhere. All role-to-person mappings live in the
 > HR Approval Roles SharePoint list and are managed by HR directly.
@@ -267,6 +270,19 @@ eligibility etc. while the Offer Letter PDF shows wage rate, vacation accrual, r
 
 ---
 
+## 9. Daily Stuck-Item Monitor
+
+The `StuckItemMonitor` timer (function_app.py -> monitor.py) runs once a day and
+emails a digest of requests that have ERRORED or STALLED (in progress with no
+approver action for more than MONITOR_STALL_HOURS, default 48h). It is read-only
+against the lists; it only sends the digest. With nothing stuck it stays quiet
+unless MONITOR_ALWAYS_SEND=true.
+
+Schedule: the trigger is `0 0 13 * * *` (13:00 UTC ~ 7am Mountain). Azure Functions
+timers use UTC by default; set the `WEBSITE_TIME_ZONE` app setting (e.g.
+`Mountain Standard Time`) to run it at a fixed local time year-round.
+
+---
 ## 8. Signed Approval Links (security)
 
 The `/api/approval-action` and `/api/rejection-form` routes are anonymous so approvers

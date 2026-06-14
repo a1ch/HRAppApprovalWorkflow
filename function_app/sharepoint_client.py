@@ -153,6 +153,28 @@ class SharePointClient:
             results.append(f)
         return results
 
+    def get_all_items_for_list(self, list_key: str, config: "ListConfig", top: int = 500) -> list[dict]:
+        """All items in a list (no status filter) - used by the daily monitor."""
+        site_id = self._get_site_id()
+        list_id = self._get_list_id(config.display_name)
+        url = (
+            f"{self.GRAPH_BASE}/sites/{site_id}/lists/{list_id}/items"
+            f"?expand=fields&$top={top}"
+        )
+        results: list[dict] = []
+        while url:
+            r = requests.get(url, headers=self._headers(), timeout=30)
+            r.raise_for_status()
+            data = r.json()
+            for item in data.get("value", []):
+                f = item.get("fields", {})
+                f["id"] = item.get("id", "")
+                f["_list_key"] = list_key
+                f["_list_display_name"] = config.display_name
+                results.append(f)
+            url = data.get("@odata.nextLink")
+        return results
+
     # ── Approval state helpers ────────────────────────────────────────────
     #
     # All status values are read from the ListConfig so lists that use
