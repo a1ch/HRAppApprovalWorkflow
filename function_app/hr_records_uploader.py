@@ -118,7 +118,7 @@ class HRRecordsUploader:
         file_data = r.json()
         web_url   = file_data.get("webUrl", "")
         item_id   = file_data.get("id", "")
-        logger.info("PDF uploaded: %s (%d bytes)", web_url, len(pdf_bytes))
+        logger.info("PDF uploaded (%d bytes)", len(pdf_bytes))
         if item_id:
             self._set_file_metadata(item_id)
         return web_url

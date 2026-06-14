@@ -16,6 +16,7 @@ import msal
 import requests
 
 from email_templates import EmailMessage
+from redact import mask_email
 
 logger = logging.getLogger(__name__)
 
@@ -81,9 +82,9 @@ class GraphMailSender:
             timeout=30,
         )
         if r.status_code == 202:
-            logger.info("Email sent to %s: %s", message.to, message.subject)
+            logger.info("Email sent to %s", mask_email(message.to))
         else:
-            logger.error("Failed to send email to %s: %s %s", message.to, r.status_code, r.text)
+            logger.error("Failed to send email to %s: %s", mask_email(message.to), r.status_code)
             r.raise_for_status()
 
     def send_batch(self, messages: list[EmailMessage]) -> None:
@@ -91,4 +92,4 @@ class GraphMailSender:
             try:
                 self.send(msg)
             except Exception as e:
-                logger.error("Failed sending to %s: %s", msg.to, e)
+                logger.error("Failed sending email to %s: %s", mask_email(msg.to), e)

@@ -111,8 +111,8 @@ def approval_action(req: func.HttpRequest) -> func.HttpResponse:
         )
 
     if not verify(request_id, approver_email, action, list_key, signature):
-        logger.warning("Bad signature on approval link for request %s (approver %s, action %s)",
-                       request_id, approver_email, action)
+        logger.warning("Bad signature on approval link for request %s (action %s)",
+                       request_id, action)
         return _bad_signature_response()
 
     if action == "reject":

@@ -34,6 +34,7 @@ from mail_sender import GraphMailSender
 from pdf_generator import build_pdf_filename, generate_approval_pdf
 from person_field import extract_person_email, extract_person_name
 from sharepoint_client import SharePointClient
+from redact import mask_email
 
 logger = logging.getLogger(__name__)
 
@@ -220,7 +221,7 @@ class ApprovalOrchestrator:
         if approver_email.lower() != expected_email.lower():
             logger.warning(
                 "Wrong approver %s for step %d (expected %s)",
-                approver_email, current_step, expected_email,
+                mask_email(approver_email), current_step, mask_email(expected_email),
             )
             return {"error": "Not the expected approver for this step", "request_id": item_id}
 
@@ -319,7 +320,7 @@ class ApprovalOrchestrator:
         if reminder_days:
             msg.subject = f"Reminder - pending {reminder_days} days: {msg.subject}"
         self.mailer.send(msg)
-        logger.info("Sent step %d email to %s (%s)", step, name, email)
+        logger.info("Sent step %d email for request %s", step, item_id)
         return True
 
     def send_step_reminder(self, item_id: str, fields: dict,
@@ -361,7 +362,7 @@ class ApprovalOrchestrator:
                 rejected_by=rejected_by,
                 rejection_comments=comments,
             ))
-        logger.info("Request %s rejected by %s", item_id, rejected_by)
+        logger.info("Request %s rejected", item_id)
 
     def _handle_full_approval(
         self,
@@ -401,7 +402,7 @@ class ApprovalOrchestrator:
                 approved_date=fully_approved_date,
             )
             self.sp.update_item(item_id, {"ApprovalRecordURL": pdf_url}, list_display_name)
-            logger.info("PDF saved: %s", pdf_url)
+            logger.info("PDF saved for request %s", item_id)
         except Exception as e:
             logger.error("PDF generation/upload failed for %s: %s", item_id, e)
 
@@ -436,8 +437,8 @@ class ApprovalOrchestrator:
             ))
 
         logger.info(
-            "Request %s fully approved. PDF: %s. Notified: %s",
-            item_id, pdf_url or "upload failed", workflow.notify_roles,
+            "Request %s fully approved (pdf=%s). Notified roles: %s",
+            item_id, "ok" if pdf_url else "upload failed", workflow.notify_roles,
         )
 
     def _extract_request_details(

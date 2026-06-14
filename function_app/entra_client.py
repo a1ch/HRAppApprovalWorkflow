@@ -103,7 +103,7 @@ class EntraClient:
         if not results:
             raise ValueError(f"User not found in Entra by display name: '{display_name}'")
         if len(results) > 1:
-            logger.warning("Multiple Entra users matched '%s' — using first", display_name)
+            logger.warning("Multiple Entra users matched a display-name query - using first")
         user = results[0]
         self._user_cache[key] = user
         return user
