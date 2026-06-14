@@ -140,7 +140,9 @@ class SharePointClient:
             f"{self.GRAPH_BASE}/sites/{site_id}/lists/{list_id}/items"
             f"?expand=fields&$filter=fields/{status_col} eq '{pending_val}'"
         )
-        r = requests.get(url, headers=self._headers(), timeout=30)
+        poll_headers = self._headers()
+        poll_headers["Prefer"] = "HonorNonIndexedQueriesWarningMayFailRandomly"
+        r = requests.get(url, headers=poll_headers, timeout=30)
         r.raise_for_status()
         results = []
         for item in r.json().get("value", []):

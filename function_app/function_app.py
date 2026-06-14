@@ -88,6 +88,7 @@ def approval_action(req: func.HttpRequest) -> func.HttpResponse:
             approver_email=approver_email,
             action="approve",
             comments="",
+            list_key=req.params.get("list_key", "").strip(),
         )
     except Exception as e:
         logger.exception("Error processing approval for %s: %s", request_id, e)
