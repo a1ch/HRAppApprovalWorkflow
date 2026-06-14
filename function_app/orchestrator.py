@@ -260,6 +260,7 @@ class ApprovalOrchestrator:
         return (
             fields.get("EmployeeEmail", "")
             or fields.get("InitiatorEmail", "")
+            or parse_person_text(fields.get("EmployeeNameText", ""))[1]
             or ""
         ).strip()
 
@@ -415,6 +416,8 @@ class ApprovalOrchestrator:
             employee_name = fields.get(config.employee_name_col, "")
         if not employee_name:
             employee_name = fields.get("EmployeeName", "")
+        if not employee_name:
+            employee_name, _ = parse_person_text(fields.get("EmployeeNameText", ""))
 
         effective_date = ""
         if config and config.effective_date_col:
@@ -428,7 +431,7 @@ class ApprovalOrchestrator:
             "request_type":    workflow.request_type,
             "employee_name":   employee_name,
             "employee_email":  self._get_employee_email(fields, config),
-            "employee_number": fields.get("EmployeeNumber", ""),
+            "employee_number": fields.get("EmployeeNumber", "") or fields.get("Employee_x0020_Number", ""),
             "initiator_name":  fields.get("InitiatorName", ""),
             "submitted_date":  fields.get("Created", ""),
             "effective_date":  effective_date,
