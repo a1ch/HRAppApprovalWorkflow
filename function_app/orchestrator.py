@@ -198,7 +198,11 @@ class ApprovalOrchestrator:
     ) -> dict:
         config            = LIST_CONFIGS.get(list_key) if list_key else None
         list_display_name = config.display_name if config else None
-        fields            = self.sp.get_item(item_id, list_display_name=list_display_name)
+        try:
+            fields = self.sp.get_item(item_id, list_display_name=list_display_name)
+        except Exception:
+            logger.info("Approval action for missing item %s (deleted/removed)", item_id)
+            return {"error": "This request could not be found. It may have been deleted or already removed.", "request_id": item_id}
         workflow_key      = fields.get("WorkflowKey", "")
         workflow          = get_workflow(workflow_key)
 
