@@ -88,6 +88,14 @@ def parse_person_text(value) -> tuple[str, str]:
     return s, ""
 
 
+# CEO is an org-level signer that is NOT collected on the request forms. Rather
+# than ask every submitter for it, the workflow supplies it here. Override per
+# environment with the CEO_FALLBACK app setting (format: "Display Name <email>").
+# PRE-LAUNCH default routes to the project owner so the real CEO is not emailed
+# until go-live -- change CEO_FALLBACK (or set CEOText on the item) when launching.
+CEO_FALLBACK = os.environ.get("CEO_FALLBACK", "Shawn Stubbs <sstubbs@streamflo.com>")
+
+
 def resolve_role(role: str, fields: dict) -> tuple[str, str]:
     """Resolve any approval role to (name, email) from the request form itself."""
     col = ROLE_TEXT_FIELD.get(role)
@@ -96,6 +104,10 @@ def resolve_role(role: str, fields: dict) -> tuple[str, str]:
             f"Role '{role}' has no approver column mapping (ROLE_TEXT_FIELD)."
         )
     name, email = parse_person_text(fields.get(col))
+    if not email and role == "CEO":
+        # CEO is org-level (not on the forms). Fall back to the configured
+        # signer so CEO-required workflows do not stall at the final step.
+        name, email = parse_person_text(CEO_FALLBACK)
     if not email:
         raise ValueError(
             f"Missing approver email for '{role}' on the request (column '{col}')."
