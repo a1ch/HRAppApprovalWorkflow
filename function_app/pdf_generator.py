@@ -161,7 +161,7 @@ def _approver_table(approvals: list[dict], styles: dict) -> Table:
                 Paragraph("", styles["label"]),
             ])
 
-    col_widths = [0.45 * inch, 1.3 * inch, 1.6 * inch, 0.9 * inch, 2.25 * inch]
+    col_widths = [0.6 * inch, 1.2 * inch, 1.55 * inch, 0.9 * inch, 2.25 * inch]
     t = Table(rows, colWidths=col_widths)
     t.setStyle(TableStyle([
         ("BACKGROUND", (0, 0), (-1, 0), NAVY_LIGHT),
@@ -233,14 +233,14 @@ def generate_approval_pdf(
     story.append(Spacer(1, 16))
 
     # ── Approved stamp ───────────────────────────────────────────────────
-    stamp_data = [[
-        Paragraph("FULLY APPROVED", s["approved_stamp"]),
-        Paragraph(
+    stamp_data = [
+        [Paragraph("FULLY APPROVED", s["approved_stamp"])],
+        [Paragraph(
             f"All approvals complete — {_fmt_date(fully_approved_date)}",
             ParagraphStyle("stamp_sub", fontSize=9, textColor=GREEN,
                            fontName="Helvetica", leading=13, alignment=TA_CENTER),
-        ),
-    ]]
+        )],
+    ]
     stamp_table = Table(stamp_data, colWidths=[6.75 * inch])
     stamp_table.setStyle(TableStyle([
         ("BACKGROUND", (0, 0), (-1, -1), GREEN_LITE),
